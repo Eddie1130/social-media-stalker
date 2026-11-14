@@ -707,6 +707,8 @@ class Catalog:
 
     def archive(self, record):
         item, folder, kind = record["item"], record["folder"], record["kind"]
+        if record.get("manual"):
+            folder = str(Path("manual") / folder)
         category = {
             "post": "posts",
             "repost": "reposts",
@@ -930,8 +932,8 @@ class Catalog:
                 item = self.fetcher(name, "post", item_id=iid)["items"][0]
                 if item["id"] != iid:
                     raise ValueError("TIKTOK_ITEM_IDENTITY_INVALID")
-                record = {"item": item, "folder": name, "kind": "post", "target": item["authorId"], "at": request["at"]}
-                event.update(username=name, kind="post", files=self.archive(record), text=f"TikTok @{name}\n{item.get('caption', '')}\n{url}", mediaCaption=f"@{name}\n{url}\n{item.get('caption', '')}"[:900])
+                record = {"item": item, "folder": name, "kind": "post", "target": item["authorId"], "at": request["at"], "manual": True}
+                event.update(username=name, kind="post", manual=True, files=self.archive(record), text=f"TikTok @{name}\n{item.get('caption', '')}\n{url}", mediaCaption=f"@{name}\n{url}\n{item.get('caption', '')}"[:900])
                 done = 1
             except Exception:
                 attempts += 1

@@ -183,6 +183,25 @@ class CatalogTests(unittest.TestCase):
         return [json.loads(data) for (data,) in self.catalog.db.execute("SELECT data FROM outbox")
                 if json.loads(data).get("kind") == "notice"]
 
+    @patch.dict(sys.modules, {"requests": Mock()})
+    def test_manual_links_archive_separately_and_reuse_media(self):
+        self.fetch.return_value = self.page()
+        request = {"userId": "100", "url": "https://www.tiktok.com/@alice/video/1", "at": self.time}
+        self.settings["tiktokRequests"] = {"100-1-0": request}
+        self.catalog.manual_requests(self.settings)
+        event = json.loads(self.catalog.db.execute("SELECT data FROM outbox").fetchone()[0])
+        self.assertTrue(event["manual"])
+        self.assertEqual(event["files"], ["tiktok/manual/alice/posts/1/01.mp4"])
+        base = self.catalog.root / "tiktok/manual/alice"
+        self.assertTrue((base / "posts/1/metadata.json").is_file())
+        self.assertTrue((base / "posts/1/caption.txt").is_file())
+        self.assertTrue((base / "media/1_01.mp4").samefile(base / "posts/1/01.mp4"))
+        self.assertFalse((self.catalog.root / "tiktok/alice/posts/1").exists())
+        self.settings["tiktokRequests"]["100-2-0"] = dict(request)
+        self.catalog.manual_requests(self.settings)
+        self.assertEqual(self.download.call_count, 1)
+        self.assertEqual(self.catalog.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0], 2)
+
     def test_transient_poll_notifies_only_third_failure_and_recovery(self):
         self.fetch.side_effect = RuntimeError("TIKTOK_PROVIDER_TIMEOUT")
         for attempt in range(1, 5):

@@ -49,10 +49,11 @@ export function contentBody(root, event, action) {
   const folder = event.archiveFolder || event.username;
   if (!/^[a-z0-9_][a-z0-9_.]{0,23}(?:_\d{1,30})?$/.test(folder)) throw Error('TIKTOK_FILE_INVALID');
   const category = { post: 'posts', repost: 'reposts', story: 'stories', profile: 'profile', like: 'likes' }[event.kind];
+  const prefix = `tiktok/${event.manual === true && event.requestId ? 'manual/' : ''}${folder}/${category}/`;
   const resolve = value => {
     if (!value?.startsWith('local:')) return value;
     const relative = value.slice(6);
-    if (!category || !relative.startsWith(`tiktok/${folder}/${category}/`) || relative.includes('\0') || relative.split(/[\\/]/).some(p => !p || p === '.' || p === '..') || !/\.(mp4|jpg|png|webp)$/.test(relative)) throw Error('TIKTOK_FILE_INVALID');
+    if (!category || !relative.startsWith(prefix) || relative.includes('\0') || relative.split(/[\\/]/).some(p => !p || p === '.' || p === '..') || !/\.(mp4|jpg|png|webp)$/.test(relative)) throw Error('TIKTOK_FILE_INVALID');
     const base = fs.realpathSync(root), file = fs.realpathSync(path.join(base, relative)), stat = fs.statSync(file);
     if (!file.startsWith(base + path.sep) || !stat.isFile() || stat.size < 12 || stat.size > 2_000_000_000) throw Error('TIKTOK_FILE_INVALID');
     return 'file://' + file;

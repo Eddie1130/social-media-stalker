@@ -100,6 +100,7 @@ Telegram 的 TikTok 帳號選單現在分別控制貼文／照片、轉發、Sto
 個人資料每次變更都保存新快照，包括 A→B→A 的回復。私密讚好、收藏、全站留言及未支援的純文字 item 不承諾可取得；未知格式會顯示失敗，保留進度。
 
 媒體位於 `downloads/tiktok/<帳號資料夾>/posts|reposts|stories|profile|likes/<ID>/`，附 `metadata.json`、`caption.txt`。
+聊天室直接傳送的 TikTok 連結會另存到 `downloads/tiktok/manual/<帳號>/posts/<ID>/`，附 `metadata.json`、`caption.txt`；媒體快取位於同帳號的 `manual/<帳號>/media/`，下載後照常回傳聊天室。既有封存檔案保留原位。
 原作媒體存放於 `downloads/tiktok/<帳號>/media/<原作ID>_<兩位數序號>.<副檔名>`（例如 `123456789_01.mp4`）；跨帳號相同原作使用 hard link 共用磁碟內容。既有 posts／reposts 等分類路徑保留相容連結；保留完整影片，超大影片另外產生 `_parts/`。
 啟動時會將舊的 `downloads/tiktok/media/` 及帳號內的 `media/<原作ID>/` 遷移至各帳號的平面 `media/`，先驗證並建立所有連結才移除舊連結；中斷後可重試，完成狀態記錄於 catalog 的 `media-layout.json`（version 3，`account-media-flat`）。舊帳號若名為 `media`，會於變更前停止並回報 `TIKTOK_MEDIA_LAYOUT_RESERVED_ACCOUNT`，避免路徑衝突。
 待抓／待下載、基準及通知 outbox 保存於 `data/watch/tiktok/catalog/catalog.sqlite`，旁邊的 `.required` marker 不可刪除。需備份時停止 catalog 或使用 SQLite backup，不要只複製正在寫入的主檔。
