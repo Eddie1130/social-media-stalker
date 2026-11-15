@@ -6,6 +6,17 @@ import { userTarget, subscribed, alertRecipients, alertText, validUsername, kind
 import { mediaRequest, validMediaUrl } from './story-media.mjs';
 
 const object = v => v && typeof v === 'object' && !Array.isArray(v);
+// Validate every album member at the event boundary; never forward arbitrary URLs.
+function catalogMedia(method, body) {
+  const items=method==='sendMediaGroup'?body?.media:[{type:method==='sendPhoto'?'photo':method==='sendVideo'?'video':'',media:body?.photo||body?.video,...(body?.caption!==undefined?{caption:body.caption}:{})}];
+  if(!Array.isArray(items)||items.length<1||items.length>10||(method==='sendMediaGroup'&&items.length<2)||
+    items.some(item=>!['photo','video'].includes(item?.type)||!validMediaUrl(item.media)||(item.caption!==undefined&&typeof item.caption!=='string')))throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
+  return items.map(item=>({type:item.type,media:item.media,...(item.type==='video'?{supports_streaming:true}:{}),...(item.caption!==undefined?{caption:item.caption}:{})}));
+}
+function mediaBody(items) {
+  if(items.length>1)return {method:'sendMediaGroup',body:{media:items}};
+  const item=items[0];return {method:item.type==='video'?'sendVideo':'sendPhoto',body:{[item.type]:item.media,...(item.type==='video'?{supports_streaming:true}:{}),...(item.caption!==undefined?{caption:item.caption}:{})}};
+}
 export class PersonalDelivery {
   constructor({ dir, stateDir, settings, log = () => {} }) {
     Object.assign(this, { dir, stateDir, settings, log });
@@ -77,15 +88,24 @@ export class PersonalDelivery {
         this.state.initialized[initKey] = true;
       }
     } else if (event.type === 'media') {
-      if (!['post', 'highlight'].includes(event.kind) || typeof event.id !== 'string' || !['sendPhoto', 'sendVideo'].includes(event.method) ||
-          !validMediaUrl(event.body?.photo || event.body?.video) || typeof event.body?.caption !== 'string' || !Number.isFinite(event.publishedAt)) throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
+      if (!['post', 'highlight'].includes(event.kind) || typeof event.id !== 'string' || !['sendPhoto', 'sendVideo', 'sendMediaGroup'].includes(event.method) || !Number.isFinite(event.publishedAt)) throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
+      const media=catalogMedia(event.method,event.body),ids=event.ids??[event.id];
+      if(!Array.isArray(ids)||ids.length!==media.length||ids.some(id=>typeof id!=='string'||!id)||new Set(ids).size!==ids.length||(media.length>1&&event.kind!=='post'))throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
       for (const id of s.allowedIds) for (const name of new Set(names)) {
         const sub = subscribed(s, id, name), pref = sub?.notifications[event.kind];
         if (!sub || !mediaEnabled(s.users[id], event.at) || !pref.enabled || event.at < Math.max(sub.joinedAt, pref.since) || event.publishedAt < sub.joinedAt) continue;
         const key = this.key(id, sub, name, event.kind, event.id);
+        const receiptKeys=ids.map(mediaId=>this.key(id,sub,name,event.kind,mediaId));
+        const indexes=media.map((_,i)=>i).filter(i=>!Object.hasOwn(this.state.seen,receiptKeys[i])&&!Object.entries(this.state.pending).some(([pendingKey,task])=>pendingKey!==key&&pendingKey!==receiptKeys[i]&&task.receiptKeys?.includes(receiptKeys[i])));
+        if(!indexes.length)continue;
+        const selected=indexes.map(i=>({...media[i]}));
+        // If an older delivery already sent part of this post, do not repeat its caption.
+        if(indexes.length<media.length)for(const item of selected)delete item.caption;
+        const request=mediaBody(selected);
+        for(const i of indexes)if(receiptKeys[i]!==key)delete this.state.pending[receiptKeys[i]];
         this.enqueue(key, { userId: id, type: 'media', username: name, generation: sub.generation, kind: event.kind,
-          eligibilityAt: event.at, target: event.target, catalogKey: event.id,
-          method: event.method, body: { ...event.body, chat_id: id } });
+          eligibilityAt: event.at, target: event.target, catalogKeys:indexes.map(i=>ids[i]),receiptKeys:indexes.map(i=>receiptKeys[i]),
+          method:request.method, body:{...request.body,chat_id:id} });
       }
     } else throw Error('TELEGRAM_EVENT_TYPE_INVALID');
     this.persist();
@@ -104,13 +124,19 @@ export class PersonalDelivery {
       if (stopping() || count >= limit) break;
       if (!this.eligible(task)) { delete this.state.pending[key]; this.persist(); continue; }
       if (Date.now() < task.retryAt) { ok = false; continue; }
-      if (!['sendMessage', 'sendPhoto', 'sendVideo'].includes(task.method) || String(task.body?.chat_id) !== task.userId) throw Error('TELEGRAM_PENDING_INVALID');
+      if (!['sendMessage', 'sendPhoto', 'sendVideo', 'sendMediaGroup'].includes(task.method) || String(task.body?.chat_id) !== task.userId) throw Error('TELEGRAM_PENDING_INVALID');
       // Refresh a queued catalog URL from the shared archive history, without re-sending
       // already acknowledged media or making another Instagram request.
-      if (task.catalogKey && /^\d+$/.test(task.target)) {
+      if (task.catalogKey || task.catalogKeys) {
+        const media=catalogMedia(task.method,task.body),keys=task.catalogKeys??[task.catalogKey];
+        if(!/^\d+$/.test(task.target)||!Array.isArray(keys)||keys.length!==media.length||keys.some(key=>typeof key!=='string')||
+          (task.receiptKeys!==undefined&&(!Array.isArray(task.receiptKeys)||task.receiptKeys.length!==media.length||task.receiptKeys.some(key=>typeof key!=='string'))))throw Error('TELEGRAM_PENDING_INVALID');
         const catalog = load(path.join(this.stateDir, `catalog-${task.target}.json`), null);
-        const url = catalog?.assets?.[task.catalogKey]?.mediaUrl;
-        if (url && validMediaUrl(url)) task.body[task.method === 'sendVideo' ? 'video' : 'photo'] = url;
+        for(let i=0;i<media.length;i++) {
+          const url=catalog?.assets?.[keys[i]]?.mediaUrl;
+          if(url&&validMediaUrl(url))media[i].media=url;
+        }
+        task.body={...mediaBody(media).body,chat_id:task.userId};
       }
       // Re-render persisted alerts so pre-upgrade retries cannot expose details.
       if (task.type === 'alert') task.body.text = alertText(this.settings(), task.userId, task.scope);
@@ -128,7 +154,9 @@ export class PersonalDelivery {
         this.persist(); this.log('PERSONAL_DELIVERY_RETRY', { userId: task.userId, username: task.username, reason: task.error });
         ok = false; continue;
       }
-      this.state.seen[key] = Date.now(); delete this.state.pending[key]; this.persist();
+      this.state.seen[key] = Date.now();
+      for(const receiptKey of task.receiptKeys||[])this.state.seen[receiptKey]=Date.now();
+      delete this.state.pending[key]; this.persist();
       this.log('PERSONAL_DELIVERY_SENT', { userId: task.userId, username: task.username, kind: task.kind || task.type });
     }
     return ok;

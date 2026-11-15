@@ -180,6 +180,8 @@ test('manual upload uses local multipart albums and per-group durable receipts p
   await delivery.drain(client);
   assert.deepEqual(calls.map(c => c.method), ['sendMediaGroup', 'sendPhoto']);
   assert.equal(calls[0].files.length, 10); assert.equal(calls[0].files[0].blob.size, 32);
+  assert.ok(calls[0].body.media[0].caption);assert.ok(calls[0].body.media.slice(1).every(m=>m.caption===undefined));
+  assert.equal(calls[1].body.caption,undefined);
   const restarted = new ManualDelivery({ root: f.root, dir: f.controlDir, stateDir: f.stateDir, settings: () => f.settings });
   await restarted.drain({ call: () => assert.fail('acknowledged groups must not resend') });
 });

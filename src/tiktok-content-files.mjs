@@ -20,10 +20,10 @@ function photoDimensions(file) {
 export function tikTokContentPlan(event, root) {
   const caption = typeof event.mediaCaption === 'string' && event.files.length ? event.mediaCaption.slice(0, 900) : undefined;
   const actions = xTextChunks(caption !== undefined ? '' : event.text).map(text => ({ method: 'sendMessage', body: { text } }));
-  let group = [];
+  let group = [], captionAttached = false;
   const flush = () => {
     if (!group.length) return;
-    if (caption !== undefined) group[0].caption = caption;
+    if (caption !== undefined && !captionAttached) { group[0].caption = caption; captionAttached = true; }
     if (group.length === 1) {
       const item = group[0];
       actions.push({ method: { photo: 'sendPhoto', video: 'sendVideo', document: 'sendDocument' }[item.type], body: { [item.type]: item.media, ...(item.caption !== undefined ? { caption: item.caption } : {}), ...(item.type === 'video' ? { supports_streaming: true } : {}) } });

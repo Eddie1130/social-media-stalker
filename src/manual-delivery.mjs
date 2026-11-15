@@ -62,7 +62,7 @@ export class ManualDelivery {
           const group = plan.groups[entry.next];
           let upload;
           try {
-            upload = await this.upload(group, result, request.userId, entry.documents === entry.next);
+            upload = await this.upload(group, result, request.userId, entry.documents === entry.next, entry.next === 0);
           } catch (error) {
             entry.localError = /^MANUAL_[A-Z0-9_]+$/.test(error.message) ? error.message : 'MANUAL_LOCAL_FILE_UNAVAILABLE'; this.persist(); break;
           }
@@ -107,7 +107,7 @@ export class ManualDelivery {
     }
     return ok;
   }
-  async upload(group, result, userId, documents) {
+  async upload(group, result, userId, documents, includeCaption = true) {
     const files = [], media = [];
     const filenames = group.map(file => this.fileResolver(this.root, file));
     const attributes = [], previews = [];
@@ -132,7 +132,7 @@ export class ManualDelivery {
         files.push({ name: 'cover' + i, blob, filename: 'cover.jpg' });
       }
       media.push({ type, media: 'attach://' + name, ...(type === 'video' ? { supports_streaming: true, ...attributes[i], thumbnail: 'attach://thumb' + i, cover: 'attach://cover' + i } : {}),
-        ...(i === 0 ? { caption: [`@${result.username}`, result.url, result.caption].filter(Boolean).join('\n').slice(0,900) } : {}) });
+        ...(includeCaption && i === 0 ? { caption: [`@${result.username}`, result.url, result.caption].filter(Boolean).join('\n').slice(0,900) } : {}) });
     }
     if (media.length > 1) return { method: 'sendMediaGroup', body: { chat_id: userId, media }, files };
     const item = media[0], method = { photo: 'sendPhoto', video: 'sendVideo', document: 'sendDocument' }[item.type];

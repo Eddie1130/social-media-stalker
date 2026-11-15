@@ -64,7 +64,11 @@ probes the login every five minutes before resuming.
 Stories use `IG_CHECK_INTERVAL_SECONDS` (default 300). Post scans and Highlight
 scans use `IG_POSTS_INTERVAL_SECONDS` and `IG_HIGHLIGHTS_INTERVAL_SECONDS` (default
 900, range 300–86400). Pagination and Highlight reads run sequentially using the
-same Chromium profile; a large scan can take several watcher cycles. Each archive
+same Chromium profile; a large scan can take several watcher cycles. After the
+initial baseline completes, the latest post page is checked first at the posts
+interval even while historical pagination continues. This refresh preserves the
+history checkpoint and has independent retry backoff. Existing state files are
+upgraded automatically; the first pending refresh is due immediately. Each archive
 queue attempts at most five media downloads per cycle with a 90-second download
 budget. Slow Telegram requests can extend the total cycle.
 

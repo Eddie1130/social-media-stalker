@@ -54,7 +54,7 @@ test('stable indexing, caption edits, baseline quiet, new media notify, independ
  const oldFolder=w.state.posts.records['1'].folder;const changed=post();changed.caption.text='edited';
  w.ingest(plan,wrap(normalizeResponse(body([post('2'),changed]),plan,'99')));w.persist();assert.equal(w.state.posts.records['1'].folder,oldFolder);
  await w.deliver(new AbortController().signal,async()=>{throw Error('TELEGRAM_ERROR_500');});assert.equal(w.state.assets['post:2:21'].archiveDone,true);assert.equal(w.state.assets['post:2:21'].telegramDone,false);
- const before=downloads;w=new CatalogWatcher(f.args);await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(downloads,before);assert.equal(sends,2);
+ const before=downloads;w=new CatalogWatcher(f.args);await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(downloads,before);assert.equal(sends,1);
  assert.equal(fs.readFileSync(path.join(f.media,oldFolder,'caption.txt'),'utf8'),'edited');
 });
 test('highlight stable folder/title and per-highlight failure allows others to progress',async t=>{
@@ -131,4 +131,86 @@ test('post catalog can ignore only the known unused location image field excepti
  assert.throws(()=>decodeResponse(raw({...response,error:123}),options),/SERVER_OR_GRAPHQL_ERROR/);
  const invalid = structuredClone(response); delete invalid.data.xdt_api__v1__feed__user_timeline_graphql_connection.edges[0].node.carousel_media[0].image_versions2;
  assert.throws(()=>normalizeResponse(decodeResponse(raw(invalid),options),{kind:'posts',cursor:null},'99'),/IMAGE_VARIANT_MISSING/);
+});
+
+test('latest posts preempt history and preserve checkpoint across restart without duplicate delivery', async t => {
+ const calls=[];
+ const f=fixture(t,{fetcher:async plan=>{
+  calls.push(plan.cursor);
+  return wrap(normalizeResponse(body([post(plan.cursor?'3':'2')],true,plan.cursor?'page3':'page2'),plan,'99'));
+ },downloader:async(root,base,a)=>({relativePath:base+'.jpg',bytes:100})});
+ let w=f.watch;
+ w.state.posts.baseline=true;w.state.posts.cursor='page2';w.state.posts.cursors=['page2'];
+ w.state.highlights.nextAt=Date.now()+1e9;
+ await w.check(new AbortController().signal);
+ assert.deepEqual(calls,[null,'page2']);
+ assert.equal(w.state.posts.cursor,'page3');
+ assert.deepEqual(w.state.posts.cursors,['page2','page3']);
+ assert.equal(w.state.assets['post:2:21'].telegramDone,false);
+ let sends=0;await w.deliver(new AbortController().signal,async()=>{sends++;});
+ assert.equal(sends,2);
+ w=new CatalogWatcher(f.args);w.state.posts.latestScan.nextAt=0;w.state.posts.nextAt=Date.now()+1e9;
+ calls.length=0;
+ await w.check(new AbortController().signal);
+ assert.deepEqual(calls,[null]);
+ assert.equal(w.state.posts.cursor,'page3');
+ await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(sends,2);
+});
+
+test('latest page failure backs off independently while history progresses', async t => {
+ const calls=[];const f=fixture(t,{fetcher:async plan=>{
+  calls.push(plan.cursor);if(!plan.cursor)throw Error('CATALOG_HTTP_429');
+  return wrap(normalizeResponse(body([post('3')],true,'page3'),plan,'99'));
+ }});const w=f.watch;
+ w.state.posts.baseline=true;w.state.posts.cursor='page2';w.state.posts.cursors=['page2'];w.state.highlights.nextAt=Date.now()+1e9;
+ await w.check(new AbortController().signal);
+ assert.deepEqual(calls,[null,'page2']);assert.equal(w.state.posts.cursor,'page3');
+ assert.equal(w.state.posts.latestScan.failures,1);assert.ok(w.state.posts.latestScan.nextAt>Date.now());
+ w.state.assets={};w.state.captions={};assert.equal(await w.deliver(new AbortController().signal,async()=>{}),false);
+});
+
+test('regular first page clears latest-page failure after history completes', async t => {
+ let fail=true;
+ const f=fixture(t,{fetcher:async plan=>{
+  if(!plan.cursor&&fail)throw Error('CATALOG_HTTP_429');
+  return wrap(normalizeResponse(body([]),plan,'99'));
+ }});const w=f.watch;
+ w.state.posts.baseline=true;w.state.posts.cursor='last';w.state.posts.cursors=['last'];w.state.highlights.nextAt=Date.now()+1e9;
+ await w.check(new AbortController().signal);
+ assert.equal(w.state.posts.cursor,null);assert.equal(w.state.posts.latestScan.failures,1);
+ fail=false;w.state.posts.nextAt=0;
+ await w.check(new AbortController().signal);
+ assert.equal(w.state.posts.latestScan.failures,0);
+ assert.ok(f.log.some(row=>row.event==='CATALOG_CHECK_OK'&&row.scope==='posts:latest'));
+});
+
+test('new carousel sends one ordered mixed album with caption once and retries as a unit', async t => {
+ const f=fixture(t,{downloader:async(root,base,a)=>({relativePath:base+'.jpg',bytes:100})});const w=f.watch;
+ w.state.posts.baseline=true;const plan={kind:'posts',cursor:null};
+ w.ingest(plan,wrap(normalizeResponse(body([post('7')]),plan,'99')));w.persist();
+ const failed=[];
+ await w.deliver(new AbortController().signal,async(method,body)=>{failed.push({method,body});throw Error('TELEGRAM_ERROR_500');});
+ assert.equal(failed.length,1);assert.equal(failed[0].method,'sendMediaGroup');
+ assert.deepEqual(failed[0].body.media.map(m=>m.type),['photo','video']);
+ assert.match(failed[0].body.media[0].caption,/caption 日本語/);assert.equal(failed[0].body.media[1].caption,undefined);
+ assert.ok(Object.values(w.state.assets).every(a=>!a.telegramDone));
+ const restarted=new CatalogWatcher(f.args),sent=[];
+ await restarted.deliver(new AbortController().signal,async(method,body,metadata)=>{sent.push({method,body,metadata});});
+ assert.equal(sent.length,1);assert.equal(sent[0].metadata.ids.length,2);
+ assert.ok(Object.values(restarted.state.assets).every(a=>a.telegramDone));
+ await restarted.deliver(new AbortController().signal,async()=>assert.fail('duplicate album'));
+});
+
+test('large post splits at ten without repeating caption or mixing posts and keeps partial acknowledgements',async t=>{
+ const f=fixture(t,{downloader:async(root,base,a)=>({relativePath:base+'.jpg',bytes:100})}),w=f.watch;
+ w.state.posts.baseline=true;const plan={kind:'posts',cursor:null};
+ const large={...post('8'),carousel_media:Array.from({length:12},(_,i)=>img(String(800+i))),carousel_media_count:12};
+ w.ingest(plan,wrap(normalizeResponse(body([large,post('9')]),plan,'99')));w.persist();
+ const calls=[];await w.deliver(new AbortController().signal,async(method,body)=>{calls.push({method,body});if(calls.length===2)throw Error('TELEGRAM_ERROR_429');});
+ assert.deepEqual(calls.map(c=>c.body.media.length),[10,2]);assert.ok(calls[0].body.media[0].caption);assert.ok(calls[1].body.media.every(m=>m.caption===undefined));
+ const restarted=new CatalogWatcher(f.args),retry=[];
+ await restarted.deliver(new AbortController().signal,async(method,body)=>retry.push({method,body}));
+ assert.deepEqual(retry.map(c=>c.body.media.length),[2,2]);
+ assert.ok(retry[0].body.media.every(m=>m.caption===undefined));assert.ok(retry[1].body.media[0].caption);
+ assert.ok(Object.values(restarted.state.assets).every(a=>a.telegramDone));
 });
