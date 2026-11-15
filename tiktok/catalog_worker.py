@@ -1,9 +1,11 @@
 """Independent durable catalog scheduler; never shares LIVE recording threads."""
 
+from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import signal
 import sqlite3
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 from catalog_provider import identifier, media_url
 from catalog_media import delivery_parts
@@ -593,6 +596,21 @@ class Catalog:
             self.db.commit()
         except Exception as error:
             self.db.rollback()
+            network_error = re.search(r"\bnet::(ERR_[A-Z_]+)\b", str(error))
+            # Trace locations identify integration failures without logging private
+            # exception messages, request URLs, cookies, or response bodies.
+            print(json.dumps({
+                "event": "TIKTOK_CATALOG_POLL_FAILED",
+                "username": name,
+                "kind": kind,
+                "exception": type(error).__name__,
+                "networkError": network_error.group(1) if network_error else None,
+                "frames": [
+                    {"file": Path(frame.filename).name, "line": frame.lineno,
+                     "function": frame.name}
+                    for frame in traceback.extract_tb(error.__traceback__)[-8:]
+                ],
+            }), flush=True)
             state["failures"] += 1
             previous_reason = state.get("reason")
             state["reason"] = (
@@ -705,7 +723,7 @@ class Catalog:
                     raise
         raise RuntimeError("TIKTOK_MEDIA_DOWNLOAD_FAILED")
 
-    def archive(self, record):
+    def archive(self, record, reusable=None):
         item, folder, kind = record["item"], record["folder"], record["kind"]
         if record.get("manual"):
             folder = str(Path("manual") / folder)
@@ -734,8 +752,9 @@ class Catalog:
             saved = (
                 existing[0]
                 if len(existing) == 1
-                else account_media(self.root, self.db, folder, item["id"], index)
-                or self.download_asset(asset, shared)
+                else (reusable[index - 1] if reusable is not None else account_media(
+                    self.root, self.db, folder, item["id"], index
+                )) or self.download_asset(asset, shared)
             )
             local = destination / f"{index:02d}{saved.suffix}"
             if not local.exists():
@@ -776,60 +795,96 @@ class Catalog:
             "INSERT OR IGNORE INTO outbox VALUES(?,?)", (key, json.dumps(event))
         )
 
-    def drain(self, settings, limit=3):
+    def drain(self, settings, limit=50, budget_seconds=15):
+        """Parallelize media IO only; browser and SQLite stay on this thread."""
         names = subscriptions(settings)
-        count = 0
-        for target, kind, iid, data in self.ready_items("pending", names, limit, stories_first=True):
-            record = json.loads(data)
-            if (
-                record["status"] != "pending"
-                or record["username"] not in names
-                or record.get("retryAt", 0) > self.clock()
-            ):
-                continue
-            if STOP.is_set() or count >= limit:
-                break
-            count += 1
-            try:
-                if record["failures"] and kind != "profile":
-                    refreshed = self.fetcher(record["username"], kind, "0", iid)[
-                        "items"
-                    ][0]
-                    if refreshed["id"] != iid:
-                        raise RuntimeError("TIKTOK_ITEM_IDENTITY_INVALID")
-                    record["item"]["assets"] = refreshed["assets"]
-                files = self.archive(record)
-                self.queue_event(record, files)
-                for extra in record.get("extraRecipients", []):
-                    self.queue_event({**record, **extra}, files)
-                record.pop("extraRecipients", None)
-                if record.get("archiveAlerted"):
-                    self.notice(
-                        record["username"], "", self.target_recipients(settings, record["username"]),
-                        f"archive-recovered:{target}:{kind}:{iid}",
-                        notice_key=f"archive:{target}:{kind}:{iid}", notice_kind="recovery",
-                    )
-                record.update(status="ready", files=files, reason=None, failures=0, archiveAlerted=False)
-            except Exception as error:
-                record["failures"] += 1
-                record["reason"] = "TIKTOK_ARCHIVE_FAILED"
-                record["retryAt"] = self.clock() + min(
-                    3600000, 30000 * 2 ** min(record["failures"], 6)
+        candidates = list(self.ready_items("pending", names, limit, stories_first=True))
+        deadline = time.monotonic() + budget_seconds
+        inflight, busy = {}, set()
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="tiktok-media") as pool:
+            while candidates or inflight:
+                while candidates and len(inflight) < 3 and not STOP.is_set() and time.monotonic() < deadline:
+                    # Aliases and different accounts reuse origin media. Serialize
+                    # each origin ID so later jobs can reuse the completed file.
+                    selected = None
+                    for index, row in enumerate(candidates):
+                        record = json.loads(row[3])
+                        key = record["item"]["id"]
+                        if key not in busy:
+                            selected = index, row, record, key
+                            break
+                    if selected is None:
+                        break
+                    index, (target, kind, iid, _), record, key = selected
+                    candidates.pop(index)
+                    if record["status"] != "pending" or record["username"] not in names or record.get("retryAt", 0) > self.clock():
+                        continue
+                    try:
+                        if record["failures"] and kind != "profile":
+                            refreshed = self.fetcher(record["username"], kind, "0", iid)["items"][0]
+                            if refreshed["id"] != iid:
+                                raise RuntimeError("TIKTOK_ITEM_IDENTITY_INVALID")
+                            record["item"]["assets"] = refreshed["assets"]
+                        folder = str(Path("manual") / record["folder"]) if record.get("manual") else record["folder"]
+                        reusable = [
+                            account_media(self.root, self.db, folder, record["item"]["id"], i)
+                            for i in range(1, len(record["item"]["assets"]) + 1)
+                        ]
+                        if STOP.is_set() or time.monotonic() >= deadline:
+                            break
+                        future = pool.submit(self.archive, record, reusable)
+                    except Exception as error:
+                        future = Future()
+                        future.set_exception(error)
+                    inflight[future] = ((target, kind, iid, record), key)
+                    busy.add(key)
+                if not inflight:
+                    break
+                done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                for future in done:
+                    job, key = inflight.pop(future)
+                    busy.remove(key)
+                    self.finish_archive(job, future, settings)
+                # A deadline/stop only prevents new dispatch. All started jobs
+                # must finish and be checkpointed before returning to the scheduler.
+                if STOP.is_set() or time.monotonic() >= deadline:
+                    candidates.clear()
+
+    def finish_archive(self, job, future, settings):
+        target, kind, iid, record = job
+        try:
+            files = future.result()
+            self.queue_event(record, files)
+            for extra in record.get("extraRecipients", []):
+                self.queue_event({**record, **extra}, files)
+            record.pop("extraRecipients", None)
+            if record.get("archiveAlerted"):
+                self.notice(
+                    record["username"], "", self.target_recipients(settings, record["username"]),
+                    f"archive-recovered:{target}:{kind}:{iid}",
+                    notice_key=f"archive:{target}:{kind}:{iid}", notice_kind="recovery",
                 )
-                if not record.get("archiveAlerted") and (record["failures"] >= 3 or needs_attention(error)):
-                    self.notice(
-                        record["username"],
-                        f"TikTok @{record['username']} 內容下載失敗，原進度已保留，將持續重試。",
-                        self.target_recipients(settings, record["username"]),
-                        f'archive:{target}:{kind}:{iid}:{record["failures"]}',
-                        notice_key=f"archive:{target}:{kind}:{iid}", notice_kind="error",
-                    )
-                    record["archiveAlerted"] = True
-            self.db.execute(
-                "UPDATE items SET data=? WHERE target=? AND kind=? AND id=?",
-                (json.dumps(record), target, kind, iid),
+            record.update(status="ready", files=files, reason=None, failures=0, archiveAlerted=False)
+        except Exception as error:
+            record["failures"] += 1
+            record["reason"] = "TIKTOK_ARCHIVE_FAILED"
+            record["retryAt"] = self.clock() + min(
+                3600000, 30000 * 2 ** min(record["failures"], 6)
             )
-            self.db.commit()
+            if not record.get("archiveAlerted") and (record["failures"] >= 3 or needs_attention(error)):
+                self.notice(
+                    record["username"],
+                    f"TikTok @{record['username']} 內容下載失敗，原進度已保留，將持續重試。",
+                    self.target_recipients(settings, record["username"]),
+                    f'archive:{target}:{kind}:{iid}:{record["failures"]}',
+                    notice_key=f"archive:{target}:{kind}:{iid}", notice_kind="error",
+                )
+                record["archiveAlerted"] = True
+        self.db.execute(
+            "UPDATE items SET data=? WHERE target=? AND kind=? AND id=?",
+            (json.dumps(record), target, kind, iid),
+        )
+        self.db.commit()
 
     def flush(self):
         events = self.state_dir / "tiktok/events"

@@ -71,6 +71,9 @@ services:
 
   tiktok-catalog:
     shm_size: 512mb
+    # Keep disposable Chromium cache and X11 sockets off slow NAS disk layers.
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     cpus: ${TIKTOK_CATALOG_CPU_LIMIT:-2.0}
     mem_limit: ${TIKTOK_CATALOG_MEMORY_LIMIT:-1536m}
     build:

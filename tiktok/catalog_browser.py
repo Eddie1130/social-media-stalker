@@ -41,23 +41,7 @@ class BrowserTransport:
             # A routed socket stays disconnected unless connect_to_server() is called.
             # Do not synchronously close it inside this callback: that can stall the sync driver.
             self.context.route_web_socket("**/*", lambda socket: None)
-        version = cookie_version(cookies)
-        marker = profile / ".cookie-version"
-        if not marker.exists() or marker.read_text() != version:
-            self.context.add_cookies(
-                [
-                    {
-                        "name": k,
-                        "value": v,
-                        "domain": ".tiktok.com",
-                        "path": "/",
-                        "secure": True,
-                    }
-                    for k, v in cookies.items()
-                ]
-            )
-            marker.write_text(version)
-            marker.chmod(0o600)
+        self.restore_cookies(profile, cookies)
         if manual:
             self.page = self.context.new_page()
         else:
@@ -76,6 +60,29 @@ class BrowserTransport:
                 raise
             self.navigation = None
         self.page.wait_for_timeout(5000)
+
+    def restore_cookies(self, profile, cookies):
+        marker = profile / ".cookie-version"
+        version = cookie_version(cookies)
+        unchanged = marker.exists() and marker.read_text() == version
+        values = cookies
+        if unchanged:
+            current = self.context.cookies("https://www.tiktok.com/")
+            # A manual login may belong to a newer session than the import file.
+            # Never mix its authentication cookies with an older imported login.
+            login_names = ("sessionid", "sessionid_ss", "sid_tt", "sid_ucp_v1", "ssid_ucp_v1")
+            if any(c["name"] in login_names and c["value"] for c in current):
+                return
+            present = {c["name"] for c in current}
+            values = {k: v for k, v in cookies.items() if k not in present}
+        if values:
+            self.context.add_cookies([
+                {"name": k, "value": v, "domain": ".tiktok.com", "path": "/", "secure": True}
+                for k, v in values.items()
+            ])
+        if not unchanged:
+            marker.write_text(version)
+            marker.chmod(0o600)
 
     def prepare_reader_page(self):
         self.page = self.context.new_page()

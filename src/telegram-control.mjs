@@ -136,7 +136,6 @@ export async function run({ env = process.env, args = process.argv } = {}) {
         for (const { file, event } of records) { delivery.ingest(event); fs.unlinkSync(file); }
         delivery.daily(Date.now(), describe);
         telegramOk = await delivery.drain(client, { stopping: () => stopping });
-        health();
         if (!args.includes('--once')) await wait(1000);
       } while (!stopping && !args.includes('--once'));
     }
@@ -161,6 +160,7 @@ export async function run({ env = process.env, args = process.argv } = {}) {
     }
     if (args.includes('--once')) await poll();
     await Promise.all([...(args.includes('--once') ? [] : [poll()]), replyDispatch(), dispatch(), manualDispatch(), xDispatch(), tikTokDispatch('notice'), tikTokDispatch('video'), tikTokDispatch('content'), tikTokDispatch('story')]);
+    if (args.includes('--once')) health();
     if (args.includes('--once')) process.exitCode = pollOk && telegramOk && xTelegramOk && ttOk.video && ttOk.notice && ttOk.content && ttOk.story ? 0 : 1;
   } finally {
     stopping = true; signal.abort(); clearInterval(heartbeat);

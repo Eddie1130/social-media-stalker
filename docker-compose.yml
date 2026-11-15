@@ -1,11 +1,11 @@
-name: ig-story-stalker
+name: social-media-stalker
 
 services:
   ig-check:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ig-story-check
+    container_name: social-media-stalker-ig-check
     shm_size: "512mb"
     environment:
       TZ: Asia/Hong_Kong
@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.login
-    container_name: ig-story-login
+    container_name: social-media-stalker-ig-login
     shm_size: "768mb"
     environment:
       TZ: Asia/Hong_Kong

@@ -1,4 +1,7 @@
 import json
+import threading
+import contextlib
+import io
 import errno
 from pathlib import Path
 import sys
@@ -17,7 +20,7 @@ from catalog_provider import (
     normalize,
     normalize_page,
 )
-from catalog_worker import Catalog, download, SessionProvider
+from catalog_worker import Catalog, download, SessionProvider, STOP
 from catalog_regular_browser import RegularBrowserTransport
 from catalog_browser import BrowserTransport
 from catalog_login import prepare_profile
@@ -25,6 +28,188 @@ from catalog_media import delivery_parts
 
 
 class CatalogTests(unittest.TestCase):
+    def test_drain_downloads_three_items_concurrently_and_commits_on_owner_thread(self):
+        self.fetch.return_value = self.page(rows=[self.row(str(i)) for i in range(1, 7)])
+        self.catalog.poll("alice", "post", self.settings)
+        original = self.download.side_effect
+        barrier = threading.Barrier(3)
+        threads = set()
+        lock = threading.Lock()
+        def concurrent_download(*args, **kwargs):
+            with lock:
+                threads.add(threading.get_ident())
+            barrier.wait(timeout=3)
+            return original(*args, **kwargs)
+        self.download.side_effect = concurrent_download
+        self.catalog.drain(self.settings)
+        self.assertEqual(len(threads), 3)
+        self.assertNotIn(threading.get_ident(), threads)
+        self.assertEqual(sum(r["status"] == "ready" for r in self.records()), 6)
+        self.assertEqual(self.catalog.db.execute("SELECT count(*) FROM outbox").fetchone()[0], 6)
+
+    def test_drain_batch_caps_at_fifty_items(self):
+        self.fetch.return_value = self.page(rows=[self.row(str(i)) for i in range(1, 56)])
+        self.catalog.poll("alice", "post", self.settings)
+        self.catalog.drain(self.settings)
+        self.assertEqual(self.download.call_count, 50)
+        self.assertEqual(sum(r["status"] == "pending" for r in self.records()), 5)
+
+    def test_drain_deadline_stops_dispatch_but_finishes_inflight(self):
+        self.fetch.return_value = self.page(rows=[self.row(str(i)) for i in range(1, 8)])
+        self.catalog.poll("alice", "post", self.settings)
+        original = self.download.side_effect
+        clock = [0.0]
+        def slow(*args, **kwargs):
+            clock[0] = 16.0
+            return original(*args, **kwargs)
+        self.download.side_effect = slow
+        with patch("catalog_worker.time.monotonic", side_effect=lambda: clock[0]):
+            self.catalog.drain(self.settings)
+        ready = sum(r["status"] == "ready" for r in self.records())
+        self.assertGreaterEqual(ready, 1)
+        self.assertLessEqual(ready, 3)
+        self.assertEqual(ready, self.download.call_count)
+
+    def test_drain_serializes_shared_media_and_retains_failed_job(self):
+        self.fetch.return_value = self.page(rows=[self.row("1"), self.row("2")])
+        self.catalog.poll("alice", "post", self.settings)
+        self.fetch.return_value = self.page(kind="repost", rows=[self.row("1")])
+        self.catalog.poll("alice", "repost", self.settings)
+        original = self.download.side_effect
+        def download_or_fail(url, dest, kind):
+            if dest.name.startswith("2_"):
+                raise TimeoutError()
+            return original(url, dest, kind)
+        self.download.side_effect = download_or_fail
+        self.catalog.drain(self.settings)
+        records = self.records()
+        self.assertEqual(sum(r["status"] == "ready" for r in records), 2)
+        failed = next(r for r in records if r["item"]["id"] == "2")
+        self.assertEqual(failed["status"], "pending")
+        self.assertEqual(failed["failures"], 1)
+        self.assertGreater(failed["retryAt"], self.time)
+        self.assertEqual(self.download.call_count, 2)
+
+    def test_drain_stop_prevents_new_dispatch_and_checkpoints_started_jobs(self):
+        self.fetch.return_value = self.page(rows=[self.row(str(i)) for i in range(1, 8)])
+        self.catalog.poll("alice", "post", self.settings)
+        original = self.download.side_effect
+        def stop_during_download(*args, **kwargs):
+            STOP.set()
+            return original(*args, **kwargs)
+        self.download.side_effect = stop_during_download
+        try:
+            self.catalog.drain(self.settings)
+        finally:
+            STOP.clear()
+        ready = sum(r["status"] == "ready" for r in self.records())
+        self.assertGreaterEqual(ready, 1)
+        self.assertLessEqual(ready, 3)
+        self.assertEqual(ready, self.download.call_count)
+        self.assertEqual(self.catalog.db.execute("SELECT count(*) FROM outbox").fetchone()[0], ready)
+
+    def test_drain_retry_refresh_stays_on_owner_thread(self):
+        self.fetch.return_value = self.page(rows=[self.row("1"), self.row("2")])
+        self.catalog.poll("alice", "post", self.settings)
+        self.catalog.db.execute("UPDATE items SET data=json_set(data,'$.failures',1)")
+        self.catalog.db.commit()
+        owner = threading.get_ident()
+        def refresh(name, kind, cursor, iid):
+            self.assertEqual(threading.get_ident(), owner)
+            return {"items": [self.row(iid)]}
+        self.fetch.side_effect = refresh
+        self.catalog.drain(self.settings)
+        self.assertTrue(all(r["status"] == "ready" for r in self.records()))
+
+    def test_cookie_marker_does_not_skip_missing_login_after_restart(self):
+        browser = BrowserTransport.__new__(BrowserTransport)
+        browser.context = Mock()
+        browser.context.cookies.return_value = [{"name": "msToken", "value": "fresh-device-token"}]
+        values = {"sessionid": "imported-login", "msToken": "old-device-token"}
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder)
+            prepare_profile(profile, values)
+            browser.restore_cookies(profile, values)
+        browser.context.add_cookies.assert_called_once_with([
+            {"name": "sessionid", "value": "imported-login", "domain": ".tiktok.com", "path": "/", "secure": True}
+        ])
+
+    def test_cookie_restore_never_mixes_imported_credentials_into_manual_login(self):
+        for login_name in ("sessionid", "sessionid_ss", "sid_tt", "sid_ucp_v1", "ssid_ucp_v1"):
+            with self.subTest(login_name=login_name):
+                browser = BrowserTransport.__new__(BrowserTransport)
+                browser.context = Mock()
+                browser.context.cookies.return_value = [{"name": login_name, "value": "new-manual-login"}]
+                values = {"sessionid": "old-imported-login", "sid_tt": "old-imported-ticket"}
+                with tempfile.TemporaryDirectory() as folder:
+                    profile = Path(folder)
+                    prepare_profile(profile, values)
+                    browser.restore_cookies(profile, values)
+                browser.context.add_cookies.assert_not_called()
+
+    def test_changed_cookie_file_still_refreshes_the_browser_session(self):
+        browser = BrowserTransport.__new__(BrowserTransport)
+        browser.context = Mock()
+        browser.context.cookies.return_value = [{"name": "sessionid", "value": "old-login"}]
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder)
+            prepare_profile(profile, {"sessionid": "old-login"})
+            old_marker = (profile / ".cookie-version").read_text()
+            browser.restore_cookies(profile, {"sessionid": "refreshed-login"})
+            self.assertNotEqual((profile / ".cookie-version").read_text(), old_marker)
+        browser.context.add_cookies.assert_called_once_with([
+            {"name": "sessionid", "value": "refreshed-login", "domain": ".tiktok.com", "path": "/", "secure": True}
+        ])
+
+    def test_browser_waits_for_slow_cdp_startup_within_deadline(self):
+        browser = RegularBrowserTransport.__new__(RegularBrowserTransport)
+        browser.chrome = Mock()
+        browser.chrome.poll.return_value = None
+        clock = [0.0]
+
+        def connect(*args, **kwargs):
+            if clock[0] < 22:
+                raise OSError("not ready")
+            return io.BytesIO(b"{}")
+
+        with patch("catalog_regular_browser.time.monotonic", side_effect=lambda: clock[0]), patch(
+            "catalog_regular_browser.time.sleep", side_effect=lambda _: clock.__setitem__(0, clock[0] + 11)
+        ), patch("catalog_regular_browser.urllib.request.urlopen", side_effect=connect):
+            browser.wait_for_cdp()
+        self.assertEqual(clock[0], 22)
+
+    def test_browser_cdp_startup_has_a_finite_deadline(self):
+        browser = RegularBrowserTransport.__new__(RegularBrowserTransport)
+        browser.chrome = Mock()
+        browser.chrome.poll.return_value = None
+        clock = [0.0]
+        with patch("catalog_regular_browser.time.monotonic", side_effect=lambda: clock[0]), patch(
+            "catalog_regular_browser.time.sleep", side_effect=lambda _: clock.__setitem__(0, clock[0] + 30)
+        ), patch("catalog_regular_browser.urllib.request.urlopen", side_effect=OSError):
+            with self.assertRaisesRegex(RuntimeError, "TIKTOK_BROWSER_CONNECT_TIMEOUT"):
+                browser.wait_for_cdp()
+        self.assertEqual(clock[0], 60)
+
+    def test_poll_failure_logs_source_without_exception_payload(self):
+        secret = "https://private.example/cookie-token-secret net::ERR_CONNECTION_RESET"
+
+        def broken_fetch(*args):
+            raise ValueError(secret)
+
+        self.fetch.side_effect = broken_fetch
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.catalog.poll("alice", "post", self.settings)
+        rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event"], "TIKTOK_CATALOG_POLL_FAILED")
+        self.assertEqual(rows[0]["exception"], "ValueError")
+        self.assertEqual(rows[0]["networkError"], "ERR_CONNECTION_RESET")
+        self.assertEqual(rows[0]["frames"][-1]["function"], "broken_fetch")
+        self.assertNotIn(secret, output.getvalue())
+        self.assertNotIn("private.example", output.getvalue())
+        self.assertEqual(self.catalog.stream("alice", "post")["failures"], 1)
+
     def test_pending_health_counts_are_available_per_account(self):
         rows = [
             ("123", "post", "1", json.dumps({"username": "alice", "status": "pending"})),
@@ -798,6 +983,7 @@ class ProviderTests(unittest.TestCase):
         factory.start.return_value = engine
         engine.chromium.launch_persistent_context.return_value = context
         context.pages = []
+        context.cookies.return_value = [{"name": "example", "value": "manually-refreshed-value"}]
         with tempfile.TemporaryDirectory() as folder:
             profile = Path(folder)
             values = {"example": "test-cookie-value"}

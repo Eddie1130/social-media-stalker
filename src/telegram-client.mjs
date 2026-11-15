@@ -10,16 +10,52 @@ export class TelegramClient {
     this.rate = load(this.file, { retryAt: 0 });
     if (!Number.isFinite(this.rate.retryAt) || this.rate.retryAt < 0) throw Error('INVALID_TELEGRAM_RATE_STATE');
     this.chats = new Map(); this.nextAt = 0;
+    this.slots = []; this.scheduling = false; this.wakeSlots = null;
+    this.signal?.addEventListener('abort', () => this.wakeSlots?.(), { once: true });
   }
-  async call(method, body, { polling = false, files = [], timeoutMs, beforeRequest } = {}) {
+  acquireSlot(chat, priority) {
+    return new Promise((resolve, reject) => {
+      this.slots.push({ chat, priority, resolve, reject });
+      this.wakeSlots?.();
+      if (!this.scheduling) void this.scheduleSlots();
+    });
+  }
+  async scheduleSlots() {
+    this.scheduling = true;
+    let now = Date.now();
+    try {
+      while (this.slots.length) {
+        if (this.signal?.aborted) throw Error('TELEGRAM_STOPPING');
+        now = Math.max(now, Date.now());
+        const readyAt = slot => Math.max(this.nextAt, this.chats.get(slot.chat) || 0);
+        const ready = this.slots.filter(slot => readyAt(slot) <= now);
+        const slot = ready.find(item => item.priority) || ready[0];
+        if (!slot) {
+          const at = Math.min(...this.slots.map(readyAt));
+          // New interactive work can interrupt a wait for a media chat. Do not
+          // reserve future slots: that lets many media lanes block every chat.
+          const wake = new Promise(resolve => { this.wakeSlots = () => resolve(false); });
+          try {
+            const elapsed = await Promise.race([this.sleep(at - now).then(() => true), wake]);
+            if (elapsed) now = Math.max(at, Date.now());
+          } finally { this.wakeSlots = null; }
+          continue;
+        }
+        this.slots.splice(this.slots.indexOf(slot), 1);
+        this.nextAt = now + 40;
+        if (slot.chat) this.chats.set(slot.chat, now + 1100);
+        slot.resolve();
+      }
+    } catch (error) {
+      for (const slot of this.slots.splice(0)) slot.reject(error);
+    } finally { this.scheduling = false; }
+  }
+  async call(method, body, { polling = false, priority = false, files = [], timeoutMs, beforeRequest } = {}) {
     if (this.signal?.aborted) throw Error('TELEGRAM_STOPPING');
     if (Date.now() < this.rate.retryAt) throw Error('TELEGRAM_RETRY_WAIT');
     if (!polling) {
-      const chat = String(body.chat_id || '');
-      const at = Math.max(Date.now(), this.nextAt, this.chats.get(chat) || 0);
-      this.nextAt = at + 40;
-      if (chat) this.chats.set(chat, at + 1100);
-      await this.sleep(at - Date.now());
+      const acknowledgement = method === 'answerCallbackQuery';
+      await this.acquireSlot(acknowledgement ? '' : String(body.chat_id || ''), priority || acknowledgement);
       if (Date.now() < this.rate.retryAt) throw Error('TELEGRAM_RETRY_WAIT');
     }
     let payload = JSON.stringify(body), headers = { 'content-type': 'application/json' };

@@ -4,6 +4,7 @@ Mount this file read-only and set PYTHONPATH=/app. No TikTok credentials or
 external network are used; this exercises the actual regular browser transport.
 """
 import os
+from pathlib import Path
 import tempfile
 import time
 from unittest.mock import patch
@@ -46,8 +47,16 @@ with tempfile.TemporaryDirectory() as profile, patch.dict(
             assert browser.page.evaluate("document.body.textContent") == "offline reader"
             browser.pause()
             browser.resume()
+        browser.restore_cookies(Path(profile), {"sessionid": "offline-import"})
+        browser.context.clear_cookies()
     finally:
         browser.close()
     assert not os.path.exists(cache), "temporary cache must be reclaimed on close"
+    restarted = RegularBrowserTransport("offline", {"sessionid": "offline-import"})
+    try:
+        restored = {c["name"]: c["value"] for c in restarted.context.cookies("https://www.tiktok.com/")}
+        assert restored.get("sessionid") == "offline-import", "marker must not hide lost session cookies"
+    finally:
+        restarted.close()
 
-print("Catalog real Chromium: one page, bounded temporary cache, freeze/resume, navigation and cleanup passed")
+print("Catalog real Chromium: resource lifecycle and login cookie restoration across restart passed")

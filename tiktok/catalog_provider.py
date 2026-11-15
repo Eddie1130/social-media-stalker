@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sys
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 
@@ -174,7 +175,7 @@ def checked_page(data, kind, cursor):
 
 
 def fetch_page(request, transport=None):
-    from gallery_dl import config, extractor
+    from gallery_dl import config, extractor, output
     from gallery_dl.extractor import tiktok
 
     name, kind = request["username"], request["kind"]
@@ -190,6 +191,12 @@ def fetch_page(request, transport=None):
     config.set(("extractor",), "timeout", 20)
     config.set(("extractor",), "retries", 1)
     ex = extractor.find(f"https://www.tiktok.com/@{name}/posts")
+    # gallery-dl normally installs this adapter through its CLI Job. Its raw
+    # diagnostics can contain private request data, so keep this logger silent.
+    ex.log = output.LoggerAdapter(
+        logging.Logger("tiktok-catalog", level=logging.CRITICAL + 1),
+        SimpleNamespace(_logger_extra={}),
+    )
     ex.initialize()
     ex.rehydration_data_cache = {}
     original = ex.request
