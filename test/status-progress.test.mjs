@@ -53,7 +53,7 @@ test('IG completed initial discovery distinguishes routine rescans', () => {
   assert.doesNotMatch(status.text, /仍在搜尋新貼文/);
 });
 test('cancelled historical jobs do not block successful X monitoring', () => {
-  const read = (file, fallback) => file.endsWith('health.json') ? { at: now, targets: [{ username: 'alice', lastSuccess: 1000 }], historyJobs: [{ username: 'alice', status: 'cancelled', reported: true }, { username: 'alice', status: 'complete', fetchDone: true, reported: true }] } : fallback;
+  const read = (file, fallback) => file.endsWith('health.json') ? { at: now, targets: [{ username: 'alice', lastSuccess: 1000 }], historyJobs: [{ username: 'alice', status: 'cancelled', reported: true, progress: { failedWindows: 1 } }, { username: 'alice', status: 'complete', fetchDone: true, reported: true }] } : fallback;
   const status = platformStatus({ xTargets: { alice: {} } }, 'x', '', read, now);
   assert.match(status.text, /已完成，持續監控新內容/);
   assert.doesNotMatch(status.text, /進度待確認/);

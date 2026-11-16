@@ -13,7 +13,7 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
   const accounts = {}, backfills = {}, accountPending = {}, progress = {}; let pending = 0;
   for (const name of names) {
     const before = pending;
-    let searching = false, scanKnown = false, scanBlocked = false, processing = false;
+    let searching = false, scanKnown = false, scanBlocked = false, processing = false, routineScan = false;
     const sub = user[config.key][name];
     const target = Array.isArray(health?.targets) ? health.targets.find(t => t?.username === name) : health?.targets?.[name];
     let state = !fresh(health) ? '狀態未更新' : !target ? '等待首次檢查' : target.failures ? '異常／重試中' : '正常';
@@ -24,7 +24,8 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
       const assets = Object.values(catalog?.assets || {}), remaining = assets.filter(a => !a?.archiveDone).length;
       pending += remaining;
       scanKnown = typeof catalog?.posts?.baseline === 'boolean' && typeof catalog?.highlights?.baseline === 'boolean';
-      searching = scanKnown && (!catalog.posts.baseline || !catalog.highlights.baseline || !!catalog.posts.cursor || !!catalog.highlights.todo?.length);
+      searching = scanKnown && (!catalog.posts.baseline || !catalog.highlights.baseline);
+      routineScan = scanKnown && !searching && (!!catalog.posts.cursor || !!catalog.highlights.todo?.length);
       scanBlocked = !!(catalog?.posts?.failures || catalog?.highlights?.failures || catalog?.posts?.latestScan?.failures || catalog?.highlights?.todo?.some(item => item?.failures));
       if (typeof catalog?.posts?.baseline === 'boolean' && typeof catalog?.highlights?.baseline === 'boolean' &&
           (!catalog.posts.baseline || !catalog.highlights.baseline || remaining)) {
@@ -36,7 +37,7 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
     } else if (platform === 'x') pending += amount(target?.pending);
     if (platform === 'x') {
       scanKnown = Number.isFinite(target?.lastSuccess) && target.lastSuccess > 0;
-      const incompleteHistory = (Array.isArray(health?.historyJobs) ? health.historyJobs : []).some(item => item?.username === name && (['partial', 'failed', 'needs_start', 'cancelled'].includes(item.status) || amount(item.progress?.partialWindows) > 0 || amount(item.progress?.failedWindows) > 0));
+      const incompleteHistory = (Array.isArray(health?.historyJobs) ? health.historyJobs : []).some(item => item?.username === name && item.status !== 'cancelled' && (['partial', 'failed', 'needs_start'].includes(item.status) || amount(item.progress?.partialWindows) > 0 || amount(item.progress?.failedWindows) > 0));
       scanBlocked = incompleteHistory;
       const jobs = history.filter(job => job.username === name), job = jobs[0];
       if (job) {
@@ -69,7 +70,7 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
     accountPending[name] = pending - before;
     progress[name] = !fresh(health) || health?.enabled === false || !target || !scanKnown ? '進度待確認' :
       scanBlocked || target.failures ? (searching ? '仍在搜尋新貼文／媒體（等待重試或排程）' : '進度待確認（等待重試或補查）') :
-      searching ? '仍在搜尋新貼文／媒體' : processing && accountPending[name] === 0 ? '搜尋完成，媒體處理中' : accountPending[name] > 0 ? '搜尋完成，下載媒體中' : '已完成，持續監控新內容';
+      searching ? '仍在搜尋新貼文／媒體' : processing && accountPending[name] === 0 ? '搜尋完成，媒體處理中' : accountPending[name] > 0 ? '搜尋完成，下載媒體中' : routineScan ? '首次搜尋已完成，例行檢查新內容' : '已完成，持續監控新內容';
     const muted = user.mediaNotifications === false || (sub?.notifications && !Object.values(sub.notifications).some(p => p.enabled));
     accounts[name] = `${icon} @${name} · ${state}${muted ? ' · 🔕' : ''}`;
   }
