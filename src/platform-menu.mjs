@@ -8,7 +8,7 @@ export function platformMenu(user, platform, page = 0, overview) {
   const last = Math.max(0, Math.ceil(names.length / 8) - 1);
   page = Math.min(Math.max(0, page), last);
   const selected = names.slice(page * 8, page * 8 + 8);
-  const lines = selected.map(name => [overview?.accounts?.[name] || `🟡 @${name} · 等待首次檢查`, overview?.backfills?.[name]].filter(Boolean).join('\n'));
+  const lines = selected.map(name => [overview?.accounts?.[name] || `🟡 @${name} · 等待首次檢查`, overview?.backfills?.[name], overview?.progress?.[name], overview?.accountPending?.[name] > 0 ? `待下載：${overview.accountPending[name]}` : null].filter(Boolean).join('\n'));
   const rows = selected.map(name => [{ text: '@' + name, callback_data: config.account + name }]);
   if (last) rows.push([...(page ? [{ text: '上一頁', callback_data: config.list + (page - 1) }] : []), ...(page < last ? [{ text: '下一頁', callback_data: config.list + (page + 1) }] : [])]);
   rows.push([{ text: '➕ 新增帳號', callback_data: config.add }, { text: '🔄 重新整理', callback_data: config.list + page }], [{ text: '⬅️ 主選單', callback_data: 'menu' }]);

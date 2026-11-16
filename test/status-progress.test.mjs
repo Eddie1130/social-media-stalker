@@ -19,7 +19,7 @@ test('IG progress distinguishes discovery, downloading and complete in user view
   catalog.assets.a.archiveDone = true;
   assert.match(get().status.text, /已完成，持續監控新內容/);
   assert.doesNotMatch(get().status.text, /待下載：0/);
-  assert.doesNotMatch(overview('ig', { username: 'alice', target: '123' }, catalog, 0).status.text, /已完成，持續監控/);
+  assert.doesNotMatch(overview('ig', { username: 'alice', target: '123' }, catalog, -200000).status.text, /已完成，持續監控/);
 });
 test('TikTok unfinished streams and unresolved records never claim completion', () => {
   assert.match(overview('tt', { post: { baseline: false } }).status.text, /仍在搜尋/);
@@ -31,4 +31,18 @@ test('X successful polling distinguishes download queue and monitoring', () => {
   assert.match(overview('x', { username: 'alice', lastSuccess: 1000, pending: 2 }).status.text, /搜尋完成，下載媒體中/);
   assert.match(overview('x', { username: 'alice', lastSuccess: 1000 }).status.text, /已完成，持續監控/);
   assert.doesNotMatch(overview('x', { username: 'alice' }).status.text, /已完成，持續監控/);
+});
+test('X unfinished history search and rendering never report all complete', () => {
+  for (const phase of ['search', 'rendering']) {
+    const read = (file, fallback) => file.endsWith('health.json') ? { at: now, targets: [{ username: 'alice', lastSuccess: 1000 }], historyJobs: [{ username: 'alice', status: phase === 'search' ? 'working' : 'complete', phase, fetchDone: phase !== 'search', reported: false }] } : fallback;
+    const status = platformStatus({ xTargets: { alice: {} } }, 'x', '', read, now);
+    assert.match(status.text, phase === 'search' ? /仍在搜尋/ : /搜尋完成，媒體處理中/);
+    assert.doesNotMatch(status.text, /已完成，持續監控/);
+  }
+});
+test('partially completed X history does not claim complete after archival', () => {
+  const read = (file, fallback) => file.endsWith('health.json') ? { at: now, targets: [{ username: 'alice', lastSuccess: 1000 }], historyJobs: [{ username: 'alice', status: 'partial', phase: 'finished', fetchDone: true, reported: true }] } : fallback;
+  const status = platformStatus({ xTargets: { alice: {} } }, 'x', '', read, now);
+  assert.match(status.text, /等待重試或補查/);
+  assert.doesNotMatch(status.text, /已完成，持續監控/);
 });

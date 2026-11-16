@@ -34,7 +34,7 @@ test('global status deduplicates subscriptions and paginates all accounts', t =>
   fs.writeFileSync(path.join(dir, 'x/health.json'), JSON.stringify({ at: 1000, targets: [{ username: 'alice', pending: 7 }] }));
   const first = adminStatus(s, dir, 0, 1000);
   assert.match(first.text, /14 個帳號 · 待下載 7/);
-  assert.match(first.text, /@alice · 正常\n待下載：7/);
+  assert.match(first.text, /@alice · 正常\n進度待確認\n待下載：7/);
   assert.match(first.text, /第 1\/2 頁/);
   assert.match(adminStatus(s, dir, 999, 1000).text, /第 2\/2 頁/);
   assert.ok(first.text.length < 4096);
@@ -49,4 +49,10 @@ test('revoked users do not count as active monitors', t => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const s = setup(); s.allowedIds = ['100']; s.users['200'].targets = { removed: {} };
   assert.doesNotMatch(adminStatus(s, dir).text, /@removed/);
+});
+test('admin status hides zero download counts', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-zero-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const s = setup(); s.users['100'].xTargets = { alice: {} };
+  assert.doesNotMatch(adminStatus(s, dir).text, /待下載[： ]0/);
 });

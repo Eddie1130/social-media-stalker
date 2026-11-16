@@ -10,9 +10,10 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
   const live = platform === 'tt' ? read(path.join(stateDir, 'tiktok/health.json'), null) : null;
   const fresh = h => h && Number.isFinite(h.at) && Math.abs(now - h.at) <= 120000 && !['stopped', 'fatal'].includes(h.phase);
   const history = platform === 'x' ? xHistoryReports(user, settings, id, stateDir, read, health) : [];
-  const accounts = {}, backfills = {}, accountPending = {}; let pending = 0;
+  const accounts = {}, backfills = {}, accountPending = {}, progress = {}; let pending = 0;
   for (const name of names) {
     const before = pending;
+    let searching = false, scanKnown = false, scanBlocked = false, processing = false;
     const sub = user[config.key][name];
     const target = Array.isArray(health?.targets) ? health.targets.find(t => t?.username === name) : health?.targets?.[name];
     let state = !fresh(health) ? '狀態未更新' : !target ? '等待首次檢查' : target.failures ? '異常／重試中' : '正常';
@@ -22,6 +23,9 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
       const catalog = read(path.join(stateDir, `catalog-${target.target}.json`), null);
       const assets = Object.values(catalog?.assets || {}), remaining = assets.filter(a => !a?.archiveDone).length;
       pending += remaining;
+      scanKnown = typeof catalog?.posts?.baseline === 'boolean' && typeof catalog?.highlights?.baseline === 'boolean';
+      searching = scanKnown && (!catalog.posts.baseline || !catalog.highlights.baseline || !!catalog.posts.cursor || !!catalog.highlights.todo?.length);
+      scanBlocked = !!(catalog?.posts?.failures || catalog?.highlights?.failures || catalog?.posts?.latestScan?.failures || catalog?.highlights?.todo?.some(item => item?.failures));
       if (typeof catalog?.posts?.baseline === 'boolean' && typeof catalog?.highlights?.baseline === 'boolean' &&
           (!catalog.posts.baseline || !catalog.highlights.baseline || remaining)) {
         const retrying = catalog.posts.failures > 0 || catalog.highlights.failures > 0 || (Array.isArray(catalog.highlights.todo) && catalog.highlights.todo.some(item => item?.failures > 0));
@@ -31,8 +35,15 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
       }
     } else if (platform === 'x') pending += amount(target?.pending);
     if (platform === 'x') {
+      scanKnown = Number.isFinite(target?.lastSuccess) && target.lastSuccess > 0;
+      const incompleteHistory = (Array.isArray(health?.historyJobs) ? health.historyJobs : []).some(item => item?.username === name && (['partial', 'failed', 'needs_start', 'cancelled'].includes(item.status) || amount(item.progress?.partialWindows) > 0 || amount(item.progress?.failedWindows) > 0));
+      scanBlocked = incompleteHistory;
       const jobs = history.filter(job => job.username === name), job = jobs[0];
       if (job) {
+        scanKnown = true;
+        processing = jobs.some(item => ['importing', 'archive', 'rendering'].includes(item.phase) || item.status === 'importing');
+        searching = jobs.some(item => item.fetchDone !== true && !['archive', 'rendering', 'finished'].includes(item.phase));
+        scanBlocked ||= jobs.some(item => ['retry', 'queued'].includes(item.status));
         backfills[name] = job.status === 'queued' ? '回補：排隊中' : simpleXHistory(fresh(health) ? job : { ...job, progressUpdatedAt: undefined }, now).split('\n').slice(1).join('\n').replace(/^進度：/, '回補：');
         if (!fresh(health) && !backfills[name].includes('狀態未更新')) backfills[name] += ' · 狀態未更新';
         if (jobs.length > 1) backfills[name] += `\n另有 ${jobs.length - 1} 項${jobs.slice(1).every(job => job.status === 'queued') ? '排隊回補' : '回補任務'}`;
@@ -40,6 +51,9 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
     }
     if (platform === 'tt') {
       const states = Object.values(target || {});
+      scanKnown = states.length > 0 && states.every(item => typeof item?.baseline === 'boolean');
+      searching = states.some(item => item?.baseline === false || /分頁|搜尋/.test(item?.phase || ''));
+      scanBlocked = states.some(item => item?.unresolved || item?.failures || item?.consecutiveFailures || item?.reason);
       pending += states.reduce((sum, state) => sum + amount(state?.pending), 0);
       const failed = states.some(s => s && (s.reason || s.failures>=3 || /error|fail|異常/.test(s.phase || '')));
       const transient=states.some(s=>(s?.consecutiveFailures||0)>0);
@@ -53,9 +67,12 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
       else if ((!fresh(live) || /重試|停止/.test(livePhase || '')) && icon === '🟢') icon = '🟡';
     }
     accountPending[name] = pending - before;
+    progress[name] = !fresh(health) || health?.enabled === false || !target || !scanKnown ? '進度待確認' :
+      scanBlocked || target.failures ? (searching ? '仍在搜尋新貼文／媒體（等待重試或排程）' : '進度待確認（等待重試或補查）') :
+      searching ? '仍在搜尋新貼文／媒體' : processing && accountPending[name] === 0 ? '搜尋完成，媒體處理中' : accountPending[name] > 0 ? '搜尋完成，下載媒體中' : '已完成，持續監控新內容';
     const muted = user.mediaNotifications === false || (sub?.notifications && !Object.values(sub.notifications).some(p => p.enabled));
     accounts[name] = `${icon} @${name} · ${state}${muted ? ' · 🔕' : ''}`;
   }
-  const text = [`${config.title}｜${names.length} 個帳號`, ...(names.length ? Object.values(accounts) : ['尚未新增帳號。']), `待下載：${pending}`].join('\n');
-  return { accounts, backfills, accountPending, pending, text, history };
+  const text = [`${config.title}｜${names.length} 個帳號`, ...(names.length ? names.map(name => [accounts[name], progress[name], ...(accountPending[name] > 0 ? [`待下載：${accountPending[name]}`] : [])].join('\n')) : ['尚未新增帳號。']), ...(pending > 0 ? [`待下載總數：${pending}`] : [])].join('\n');
+  return { accounts, backfills, accountPending, progress, pending, text, history };
 }
