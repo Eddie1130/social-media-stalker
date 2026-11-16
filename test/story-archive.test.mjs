@@ -55,6 +55,8 @@ test('archive retries persist across restart independently of Telegram delivery'
   assert.equal(await archive.run(), false);
   assert.equal(archive.state.pending['123'].error, 'NAS_ENOSPC');
   archive = new StoryArchive({ ...args, download: async (_, base) => ({ relativePath: base + '.jpg', bytes: 32 }) });
+  assert.equal(await archive.run(), false, 'retry delay survives restart');
+  const retryTime=Date.now()+60001;t.mock.method(Date,'now',()=>retryTime);
   assert.equal(await archive.run(), true);
   assert.ok(archive.state.saved['123']);
   archive.enqueue([photo]);

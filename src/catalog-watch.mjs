@@ -170,27 +170,32 @@ export class CatalogWatcher {
     this.asyncStore ||= new AtomicStateStore({file:this.file,initial:this.state});
     const progress=new ArchiveProgress({commit:()=>this.persistAsync()});
     const captions=[];
-    for(const [id,caption] of Object.entries(this.state.captions).filter(([,c])=>c.savedHash!==c.hash).sort(([,a],[,b])=>(a.lastAttemptAt||0)-(b.lastAttemptAt||0)).slice(0,10)) {
+    for(const [id,caption] of Object.entries(this.state.captions).filter(([,c])=>c.savedHash!==c.hash&&Date.now()>=(c.retryAt||0)).sort(([,a],[,b])=>(a.lastAttemptAt||0)-(b.lastAttemptAt||0)).slice(0,10)) {
       if(signal.aborted||shouldYield())break;
       caption.lastAttemptAt=Date.now();
       try {
         const file=this.full(caption.file);await fsp.mkdir(path.dirname(file),{recursive:true});
         const temp=file+'.part';await fsp.writeFile(temp,caption.text,{mode:0o644});
         const handle=await fsp.open(temp,'r+');try{await handle.sync();}finally{await handle.close();}
-        await fsp.rename(temp,file);caption.savedHash=caption.hash;
-      }catch(e){ok=false;await this.persistAsync();this.log('CATALOG_CAPTION_RETRY',{id,reason:archiveReason(e)});continue;}
+        await fsp.rename(temp,file);caption.savedHash=caption.hash;caption.retryAt=0;
+      }catch(e){ok=false;caption.retryAt=Date.now()+60000;await this.persistAsync();this.log('CATALOG_CAPTION_RETRY',{id,reason:archiveReason(e)});continue;}
       const completion=progress.complete('caption:'+id,{}).then(()=>this.log('CATALOG_CAPTION_SAVED',{id}));void completion.catch(()=>{});captions.push(completion);
     }
     await Promise.all([...captions,progress.flush()]);
     const pending=Object.values(this.state.assets).filter(a=>!a.archiveDone||!a.telegramDone).sort((a,b)=>(a.lastAttemptAt||0)-(b.lastAttemptAt||0));
-    await archiveBatch(pending.filter(asset=>!asset.archiveDone),async asset=>{
+    const completions=[];
+    try { await archiveBatch(pending.filter(asset=>!asset.archiveDone&&Date.now()>=(asset.archiveRetryAt||0)),async asset=>{
       this.log('CATALOG_MEDIA_STARTED',{key:asset.key});
       let saved;
       try{saved=await this.downloader(this.root,asset.base,asset,{signal,timeoutMs:45000});}
-      catch(e){if(signal.aborted||shouldYield())return;ok=false;asset.lastAttemptAt=Date.now();this.log('CATALOG_ARCHIVE_RETRY',{key:asset.key,reason:archiveReason(e)});}
-      if(saved){asset.archiveDone=true;asset.relativePath=saved.relativePath;asset.bytes=saved.bytes;await progress.complete(asset.key,{});this.log('CATALOG_MEDIA_SAVED',{key:asset.key,path:saved.relativePath,bytes:saved.bytes});}
+      catch(e){if(signal.aborted||shouldYield())return;ok=false;asset.lastAttemptAt=Date.now();asset.archiveRetryAt=Date.now()+60000;await this.persistAsync();this.log('CATALOG_ARCHIVE_RETRY',{key:asset.key,reason:archiveReason(e)});}
+      if(saved){
+        asset.archiveDone=true;asset.archiveRetryAt=0;asset.relativePath=saved.relativePath;asset.bytes=saved.bytes;
+        const completion=progress.complete(asset.key,{}).then(()=>this.log('CATALOG_MEDIA_SAVED',{key:asset.key,path:saved.relativePath,bytes:saved.bytes}));
+        void completion.catch(()=>{});completions.push(completion);
+      }
     },{signal,shouldYield,concurrency:archiveLimits().downloadConcurrency});
-    await progress.flush();
+    } finally { await Promise.all([...completions,progress.flush()]); }
     const groups=[],posts=new Map();
     for(const asset of pending.filter(a=>!a.telegramDone)) {
       if(asset.kind!=='post'){groups.push([asset]);continue;}

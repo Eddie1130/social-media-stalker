@@ -149,7 +149,7 @@ export class StoryArchive {
     } catch (e) { this.log('NAS_STORAGE_ERROR', { reason: archiveReason(e) }); return false; }
     this.log('NAS_STORAGE_OK');
     let ok = true;
-    const pending = Object.values(this.state.pending).sort((a,b) => Number(!!a.failures) - Number(!!b.failures) || (a.lastAttemptAt || 0) - (b.lastAttemptAt || 0));
+    const pending = Object.values(this.state.pending).filter(s=>!s.failures||Date.now()>=(s.lastAttemptAt||0)+60000).sort((a,b) => Number(!!a.failures) - Number(!!b.failures) || (a.lastAttemptAt || 0) - (b.lastAttemptAt || 0));
     await archiveBatch(pending, async story => {
       if (Date.now() - story.detectedAt > 7 * 86400000) {
         this.state.failed[story.id] = { at: Date.now(), reason: story.error || 'NAS_RETRY_EXPIRED' };

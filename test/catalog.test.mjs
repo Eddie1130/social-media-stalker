@@ -50,7 +50,10 @@ test('stable indexing, caption edits, baseline quiet, new media notify, independ
  assert.equal(Object.values(w.state.assets).every(a=>a.telegramDone),true);
  assert.match(w.state.posts.records['1'].folder,/^posts\/00001_\d{8}_\d{6}_JST$/);
  await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(sends,0);assert.equal(Object.values(w.state.assets).every(a=>!a.archiveDone),true);
- w=new CatalogWatcher(f.args);fail=false;await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(Object.values(w.state.assets).every(a=>a.archiveDone),true);
+ w=new CatalogWatcher(f.args);fail=false;
+ const attempts=downloads;await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(downloads,attempts,'failed assets retain retry delay across restart');
+ const retryTime=Date.now()+60001;t.mock.method(Date,'now',()=>retryTime);
+ await w.deliver(new AbortController().signal,async()=>{sends++;});assert.equal(Object.values(w.state.assets).every(a=>a.archiveDone),true);
  const oldFolder=w.state.posts.records['1'].folder;const changed=post();changed.caption.text='edited';
  w.ingest(plan,wrap(normalizeResponse(body([post('2'),changed]),plan,'99')));w.persist();assert.equal(w.state.posts.records['1'].folder,oldFolder);
  await w.deliver(new AbortController().signal,async()=>{throw Error('TELEGRAM_ERROR_500');});assert.equal(w.state.assets['post:2:21'].archiveDone,true);assert.equal(w.state.assets['post:2:21'].telegramDone,false);
@@ -228,4 +231,21 @@ test('catalog dispatches more work before checkpoint timer, then durably flushes
  } finally { await run; }
  const restarted=new CatalogWatcher(f.args);
  assert.equal(Object.values(restarted.state.assets).filter(a=>a.archiveDone).length,12);
+});
+
+test('caption and media failures respect retry deadlines during background draining', async t => {
+ let downloads=0;const f=fixture(t,{downloader:async()=>{downloads++;throw Error('NETWORK');}});
+ fs.writeFileSync(path.join(f.media,'posts'),'blocked');
+ f.watch.state.captions.one={file:'posts/one/caption.txt',hash:'new',text:'caption'};
+ f.watch.state.assets.one={key:'one',base:'posts/one/01',id:'11',mediaType:1,mediaUrl:'https://s.cdninstagram.com/a.jpg',archiveDone:false,telegramDone:true};
+ await f.watch.deliver(new AbortController().signal,async()=>{});
+ const before=f.log.filter(row=>row.event==='CATALOG_CAPTION_RETRY').length;
+ const restarted=new CatalogWatcher(f.args);
+ await restarted.deliver(new AbortController().signal,async()=>{});
+ assert.equal(downloads,1);
+ assert.equal(f.log.filter(row=>row.event==='CATALOG_CAPTION_RETRY').length,before);
+ const due=Date.now()+60001;t.mock.method(Date,'now',()=>due);
+ await restarted.deliver(new AbortController().signal,async()=>{});
+ assert.equal(downloads,2);
+ assert.equal(f.log.filter(row=>row.event==='CATALOG_CAPTION_RETRY').length,before+1);
 });

@@ -181,10 +181,10 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
             for (const alias of group) alias.watcher = entry.watcher;
             emit('WATCH_TARGET_READY', { target, username: config.username, usernames: group.map(e => e.config.username) });
           }
-          const cycle = await entry.watcher.cycle();
+          const cycle = await entry.watcher.cycle({archiveOnly:Date.now()<entry.watcher.status().nextFetchAt});
           emit('WATCH_TARGET_COMPLETED', { target, username: config.username, usernames: group.map(e => e.config.username) });
           entry.error = null; entry.retryAt = 0; entry.runtimeFailures = 0; entry.runtimeCritical = false;
-          entry.nextCycleAt = cycle?.yielded ? 0 : Date.now() + Math.max(1000, Math.min(interval * 1000, entry.watcher.status().nextFetchAt - Date.now()));
+          entry.nextCycleAt = cycle?.yielded ? 0 : Math.min(cycle?.nextArchiveAt||Infinity,Date.now() + Math.max(1000, Math.min(interval * 1000, entry.watcher.status().nextFetchAt - Date.now())));
         } catch (error) {
           if (error.message === 'SHARED_SESSION_INVALID') { sessionBlocked = { ...config, probeAt: Date.now() + 300000 }; emit('SHARED_SESSION_INVALID'); break; }
           // Preserve the in-memory queue after a failed write. Only this account pauses.
@@ -214,6 +214,7 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
         }
       }
       health();
+      if (stopping) break;
       if (args.includes('--once')) {
         const status = aggregateHealth(entries);
         process.exitCode = sessionBlocked || status.failures || !status.telegramOk || !status.archiveOk || !status.catalogOk ? 1 : 0;
@@ -270,7 +271,7 @@ export function createTargetWatcher({ target, username, dir, root, interval, con
   let nextFetchAt = 0, telegramOk = true, archiveOk = true, catalogOk = true;
   return {
     status: () => ({ target, username, failures: state.failures, telegramOk, archiveOk, catalogOk, nextFetchAt }),
-    async cycle() {
+    async cycle({archiveOnly=false}={}) {
       log('WATCH_TARGET_STARTED');
       if (Date.now() >= nextFetchAt) {
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ig-media-'));
@@ -355,7 +356,7 @@ export function createTargetWatcher({ target, username, dir, root, interval, con
         }
       }
       if (catalog && !control.stopping) {
-        await catalog.check(control.signal, control.onChild, { shouldYield: yieldToManual });
+        if(!archiveOnly)await catalog.check(control.signal, control.onChild, { shouldYield: yieldToManual });
         if (yieldToManual()) { persist(); return { yielded: true }; }
         if (!control.stopping) catalogOk = await catalog.deliver(control.signal,
           (method, body, metadata) => notifications
@@ -363,7 +364,13 @@ export function createTargetWatcher({ target, username, dir, root, interval, con
             : callTelegram(method, body), { shouldYield: yieldToManual });
       }
       persist();
-      return { yielded: yieldToManual() };
+      const now=Date.now();
+      const attempts=[
+        ...Object.values(archive?.state.pending||{}).map(s=>s.failures?(s.lastAttemptAt||0)+60000:now),
+        ...Object.values(catalog?.state.assets||{}).filter(a=>!a.archiveDone).map(a=>a.archiveRetryAt||now),
+        ...Object.values(catalog?.state.captions||{}).filter(c=>c.savedHash!==c.hash).map(c=>c.retryAt||now),
+      ];
+      return { yielded: yieldToManual(), nextArchiveAt:attempts.length?Math.max(now+5000,Math.min(...attempts)):null };
     },
   };
 }

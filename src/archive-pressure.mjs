@@ -14,6 +14,26 @@ export class PressureController {
  limits(){return {downloadConcurrency:this.level,allowHistoricalDiscovery:this.level===3};}
 }
 let cached={at:0,value:null,file:''};
+// Consume each metric observation once. Idle/startup series must not keep
+// reporting the same old slow checkpoint as sustained pressure.
+export class PressureSampler {
+ constructor(){this.counts=new Map();this.loopAt=0;this.loopMs=0;}
+ observe(local,remote=[],now=Date.now()){
+  let checkpointP95Ms=0;
+  for(const [source,metrics] of [local,...remote].entries()){
+   for(const row of metrics?.series||[]){
+    if(!['settings_commit','event_loop'].includes(row.name))continue;
+    const key=JSON.stringify([source,row.name,row.dimensions]);
+    if(this.counts.get(key)===row.count)continue;
+    this.counts.set(key,row.count);
+    if(row.name==='settings_commit')checkpointP95Ms=Math.max(checkpointP95Ms,row.last||0);
+    if(source===0&&row.name==='event_loop'){this.loopMs=row.last||0;this.loopAt=now;}
+   }
+  }
+  // Event-loop observations arrive every 15 seconds, publisher ticks every 5.
+  return {checkpointP95Ms,eventLoopP95Ms:now-this.loopAt<=30000?this.loopMs:0};
+ }
+}
 export function archiveLimits({env=process.env,now=Date.now()}={}){
  if(env.ARCHIVE_PRESSURE_ENABLED!=='1')return {downloadConcurrency:3,allowHistoricalDiscovery:true};
  const file=path.join(env.IG_STATE_DIR||'/app/state','io-pressure.json');
@@ -24,15 +44,12 @@ export function archiveLimits({env=process.env,now=Date.now()}={}){
 }
 export function createPressurePublisher({stateDir,controlMetrics,readServiceMetrics,interactiveAge=()=>0,enabled=true}){
  if(!enabled)return {close(){}};
- const controller=new PressureController();let writing=false;
+ const controller=new PressureController(),sampler=new PressureSampler();let writing=false;
  const tick=async()=>{
   if(writing)return;writing=true;
   try{
    const local=controlMetrics(),remote=readServiceMetrics()||[];
-   const rows=[...local.series,...remote.flatMap(m=>m?.series||[])];
-   const checkpointP95Ms=Math.max(0,...rows.filter(r=>r.name==='settings_commit').map(r=>r.recentP95||r.p95||0));
-   const eventLoopP95Ms=Math.max(0,...local.series.filter(r=>r.name==='event_loop').map(r=>r.last||0));
-   const limits=controller.observe({checkpointP95Ms,eventLoopP95Ms,oldestInteractiveMs:interactiveAge()});
+   const limits=controller.observe({...sampler.observe(local,remote),oldestInteractiveMs:interactiveAge()});
    const file=path.join(stateDir,'io-pressure.json'),tmp=file+'.'+process.pid+'.tmp';
    await fsp.writeFile(tmp,JSON.stringify({at:Date.now(),...limits}),{mode:0o600});await fsp.rename(tmp,file);
   }catch{/* Stale readers conservatively reduce background work. */}finally{writing=false;}
