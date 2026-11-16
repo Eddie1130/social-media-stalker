@@ -21,6 +21,7 @@ from .snapshot import MAPS, Snapshot, generation, read_json, safe_open, valid_na
 TTL = 24 * 3600
 RESERVE = 1024**3
 ACTIVE = {"queued", "building"}
+HEARTBEAT_INTERVAL = 15
 
 
 def atomic(file, value):
@@ -73,6 +74,8 @@ class ExportService:
         self.downloads = {}
         self.stop = threading.Event()
         self.worker = None
+        self._persisted = {}
+        self._last_heartbeat = None
         file = self.dir / "state.json"
         if (self.dir / "state.required").exists() and not file.exists():
             raise ValueError("EXPORT_HISTORY_MISSING")
@@ -98,9 +101,15 @@ class ExportService:
 
     def persist(self):
         with self.guard:
-            atomic(self.dir / "state.json", self.state)
-            # Controller receives messages, never internal paths or the token hash table.
-            atomic(self.dir / "reports.json", self.state["reports"])
+            # Cache immutable content only after each durable write succeeds. State
+            # and reports can fail independently and must retry independently.
+            for name, value in (("state.json", self.state), ("reports.json", self.state["reports"])):
+                content = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                file = self.dir / name
+                if self._persisted.get(name) == content and file.is_file():
+                    continue
+                atomic(file, value)
+                self._persisted[name] = content
 
     def report(self, uid, text, rows=None, request=None, grant=None):
         identity = secrets.token_hex(12)
@@ -245,7 +254,10 @@ class ExportService:
                     self.persist()
                     self.worker = threading.Thread(target=self.build, args=(job,), name="archive-builder", daemon=True)
                     self.worker.start()
-        atomic(self.dir / "health.json", {"at": int(self.clock() * 1000)})
+        now = self.clock()
+        if self._last_heartbeat is None or now < self._last_heartbeat or now - self._last_heartbeat >= HEARTBEAT_INTERVAL:
+            atomic(self.dir / "health.json", {"at": int(now * 1000)})
+            self._last_heartbeat = now
 
     def build(self, job):
         temporary = self.dir / (job["id"] + ".part")

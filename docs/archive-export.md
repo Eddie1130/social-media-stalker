@@ -76,6 +76,8 @@ npm run test:export
 
 ### 運行狀態與停用
 
+空閒時不重寫內容未變的 `state.json`／`reports.json`；實際變更仍立即同步保存，失敗的寫入會在下輪重試。心跳每 15 秒更新一次，仍低於健康檢查的 120 秒門檻。
+
 `data/exports/health.json` 是 worker 心跳，`state.json` 保存申請、token hashes、待交付回覆與工作；待交付回覆可能含完整 token 連結，因此整個目錄都屬私人資料。`reports.json` 供 controller 讀取並以 `exportReceipts` 在同一設定交易確認交付。ZIP 檔名為內部隨機工作 ID。
 
 損壞／缺失的設定不授予下載權限；有 `.required` 而遺失匯出狀態時拒絕啟動。匯出回覆讀取失敗不會停止其他平台的 Telegram 工作。檔案路徑以 directory descriptors 及 `O_NOFOLLOW` 開啟，拒絕路徑穿越、symlink 與跨帳號路徑。最多同時處理八個 HTTP 連線，每個連線的 socket timeout 為 60 秒；持續有資料傳輸可以更久。

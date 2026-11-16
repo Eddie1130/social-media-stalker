@@ -61,6 +61,74 @@ class ExportTest(unittest.TestCase):
         reports = [r for r in self.service.state["reports"].values() if r["userId"] == uid and r.get("grant")]
         return reports[-1]["text"].split("/files/")[-1]
 
+    def test_idle_ticks_skip_unchanged_state_and_throttle_heartbeat(self):
+        with patch("export_service.server.atomic", wraps=atomic) as write:
+            for second in range(60):
+                self.now = 1800000000 + second
+                self.service.tick()
+        names = [call.args[0].name for call in write.call_args_list]
+        self.assertEqual(names.count("state.json"), 0)
+        self.assertEqual(names.count("reports.json"), 0)
+        self.assertEqual(names.count("health.json"), 4)
+
+    def test_changed_state_is_durable_immediately_and_reports_are_independent(self):
+        with patch("export_service.server.atomic", wraps=atomic) as write:
+            self.service.state["processed"]["2-1"] = True
+            self.service.persist()
+            self.service.persist()
+            self.assertEqual([call.args[0].name for call in write.call_args_list], ["state.json"])
+        self.assertTrue(json.loads((self.out / "state.json").read_text())["processed"]["2-1"])
+        self.service.report("2", "new report")
+        self.service.persist()
+        key = next(iter(self.service.state["reports"]))
+        self.service.state["reports"][key]["text"] = "edited report"
+        self.service.persist()
+        self.assertEqual(json.loads((self.out / "reports.json").read_text())[key]["text"], "edited report")
+
+    def test_failed_report_write_is_retried_without_rewriting_committed_state(self):
+        self.service.report("2", "report")
+        def fail_reports(file, value):
+            if file.name == "reports.json":
+                raise OSError("disk failure")
+            atomic(file, value)
+        with patch("export_service.server.atomic", side_effect=fail_reports):
+            with self.assertRaises(OSError):
+                self.service.persist()
+        with patch("export_service.server.atomic", wraps=atomic) as write:
+            self.service.persist()
+        self.assertEqual([call.args[0].name for call in write.call_args_list], ["reports.json"])
+        self.assertEqual(json.loads((self.out / "reports.json").read_text()), self.service.state["reports"])
+
+    def test_failed_heartbeat_is_retried_before_next_interval(self):
+        self.service.tick()
+        self.now += 15
+        with patch("export_service.server.atomic", side_effect=OSError("disk failure")):
+            with self.assertRaises(OSError):
+                self.service.tick()
+        self.service.tick()
+        self.assertEqual(json.loads((self.out / "health.json").read_text())["at"], self.now * 1000)
+
+    def test_heartbeat_recovers_after_clock_moves_backwards(self):
+        self.service.tick()
+        self.now -= 10
+        self.service.tick()
+        self.assertEqual(json.loads((self.out / "health.json").read_text())["at"], self.now * 1000)
+
+    def test_invalid_settings_do_not_refresh_heartbeat(self):
+        self.service.tick()
+        original = (self.out / "health.json").read_bytes()
+        self.now += 20
+        self.settings["version"] = 0
+        self.save_settings()
+        with self.assertRaisesRegex(ValueError, "EXPORT_SETTINGS_INVALID"):
+            self.service.tick()
+        self.assertEqual((self.out / "health.json").read_bytes(), original)
+
+    def test_deleted_report_file_is_recreated(self):
+        (self.out / "reports.json").unlink()
+        self.service.persist()
+        self.assertEqual(json.loads((self.out / "reports.json").read_text()), {})
+
     def test_zip_manifest_and_private_cache_exclusion(self):
         self.write("x/manual/alice/media/999.mp4", b"private")
         self.write("x/alice/accounts.db", b"private")
