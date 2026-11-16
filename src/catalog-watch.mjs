@@ -56,6 +56,8 @@ export class CatalogWatcher {
     if(s.version!==1||s.target!==target||!obj(s.posts)||!obj(s.highlights)||!obj(s.assets)||!obj(s.captions))throw Error('CATALOG_INVALID_HISTORY');
     for(const group of [s.posts,s.highlights])if(!obj(group.records)||typeof group.baseline!=='boolean'||!Number.isInteger(group.nextIndex)||group.nextIndex<1||!Number.isFinite(group.nextAt)||!Number.isInteger(group.failures)||group.failures<0)throw Error('CATALOG_INVALID_HISTORY');
     if(!Array.isArray(s.highlights.todo)||!Array.isArray(s.posts.cursors)||(s.posts.cursor!==null&&typeof s.posts.cursor!=='string'))throw Error('CATALOG_INVALID_HISTORY');
+    s.posts.latestScan ??= {nextAt:0,failures:0};
+    if(!obj(s.posts.latestScan)||!Number.isFinite(s.posts.latestScan.nextAt)||!Number.isInteger(s.posts.latestScan.failures)||s.posts.latestScan.failures<0)throw Error('CATALOG_INVALID_HISTORY');
     for(const record of Object.values(s.posts.records))this.full(record.folder);
     for(const record of Object.values(s.highlights.records))this.full(record.folder);
     for(const asset of Object.values(s.assets)) {
@@ -84,7 +86,7 @@ export class CatalogWatcher {
     const {posts,highlights}=this.state;
     if(plan.kind==='posts') {
       if(!Array.isArray(result.posts)||typeof result.hasNext!=='boolean')throw Error('CATALOG_INVALID_POSTS_RESULT');
-      if(result.hasNext && (typeof result.cursor!=='string'||!result.cursor||posts.cursors.includes(result.cursor)))throw Error('CATALOG_PAGINATION_LOOP');
+      if(result.hasNext && (typeof result.cursor!=='string'||!result.cursor||(!plan.latest&&posts.cursors.includes(result.cursor))))throw Error('CATALOG_PAGINATION_LOOP');
       for(const post of result.posts) {
         if(!idOK(post.id)||!Array.isArray(post.media)||!post.media.length||typeof post.caption!=='string')throw Error('CATALOG_INVALID_POST');
         let record=posts.records[post.id];
@@ -92,6 +94,9 @@ export class CatalogWatcher {
         this.state.captions[post.id]={...this.state.captions[post.id],file:record.folder+'/caption.txt',text:post.caption,hash:hash(post.caption)};
         for(const part of post.media)this.addAsset('post',post.id,part,record,'',post.code,!posts.baseline);
       }
+      if(plan.cursor===null)posts.latestScan={nextAt:Date.now()+this.postsInterval*1000,failures:0};
+      // Latest-page refreshes ingest media without changing the history checkpoint.
+      if(plan.latest)return;
       posts.cursor=result.hasNext?result.cursor:null;
       if(result.hasNext){posts.cursors.push(result.cursor);posts.nextAt=0;}
       else{posts.cursors=[];posts.nextAt=Date.now()+this.postsInterval*1000;posts.baseline=true;}
@@ -114,14 +119,16 @@ export class CatalogWatcher {
     }
   }
   async check(signal,onChild,{shouldYield=()=>false}={}) {
-    for(const group of ['posts','highlights']) {
+    for(const task of ['latestPosts','posts','highlights']) {
       if(shouldYield())break;
-      const state=this.state[group];if(signal.aborted||Date.now()<state.nextAt)continue;
+      const latest=task==='latestPosts',group=latest?'posts':task;
+      if(latest&&(!this.state.posts.baseline||!this.state.posts.cursor))continue;
+      const state=latest?this.state.posts.latestScan:this.state[group];if(signal.aborted||Date.now()<state.nextAt)continue;
       const refreshFailedTray = group === 'highlights' && state.todo.length > 0 && state.todo.every(h => h.failures > 0) && Date.now() - (state.lastTrayAt || 0) >= this.highlightsInterval * 1000;
       const due = group === 'highlights' ? state.todo.find(h => !h.retryAt || Date.now() >= h.retryAt) : null;
       if (group === 'highlights' && state.todo.length && !due && !refreshFailedTray) continue;
-      const plan=group==='posts'?{kind:'posts',cursor:state.cursor}:refreshFailedTray?{kind:'tray'}:due?{kind:'highlight',...due}:{kind:'tray'};
-      const scope=plan.kind==='highlight'?'highlight:'+plan.id:group;
+      const plan=group==='posts'?{kind:'posts',cursor:latest?null:state.cursor,...(latest?{latest:true}:{})}:refreshFailedTray?{kind:'tray'}:due?{kind:'highlight',...due}:{kind:'tray'};
+      const scope=latest?'posts:latest':plan.kind==='highlight'?'highlight:'+plan.id:group;
       this.log('CATALOG_CHECK_STARTED',{group,scope,kind:plan.kind});
       // Restore the previous in-memory snapshot if validation fails midway.
       const snapshot=JSON.stringify(this.state);
@@ -129,7 +136,7 @@ export class CatalogWatcher {
       catch(e){
         this.state=JSON.parse(snapshot);if(signal.aborted)return;
         if(sessionInvalid(e))throw Error('SHARED_SESSION_INVALID');
-        const failed=this.state[group];failed.failures++;
+        const failed=latest?this.state.posts.latestScan:this.state[group];failed.failures++;
         failed.nextAt=Date.now()+Math.min(3600,300*2**Math.min(failed.failures,4))*1000;
         if (plan.kind === 'highlight') {
           const entry=failed.todo.find(h=>h.id===plan.id);
@@ -140,6 +147,7 @@ export class CatalogWatcher {
         this.persist();this.log('CATALOG_CHECK_FAILED',{group,scope,reason:safeReason(e)});continue;
       }
       this.persist();this.log('CATALOG_CHECK_OK',{group,scope,kind:plan.kind,baselineComplete:this.state[group].baseline});
+      if(group==='posts'&&!latest&&plan.cursor===null)this.log('CATALOG_CHECK_OK',{group,scope:'posts:latest',kind:plan.kind,baselineComplete:this.state.posts.baseline});
     }
   }
   async deliver(signal,sendTelegram,{shouldYield=()=>false}={}) {
@@ -166,28 +174,42 @@ export class CatalogWatcher {
       catch(e){if(signal.aborted||shouldYield())return;ok=false;asset.lastAttemptAt=Date.now();this.log('CATALOG_ARCHIVE_RETRY',{key:asset.key,reason:archiveReason(e)});}
       if(saved){asset.archiveDone=true;asset.relativePath=saved.relativePath;asset.bytes=saved.bytes;this.persist();this.log('CATALOG_MEDIA_SAVED',{key:asset.key,path:saved.relativePath,bytes:saved.bytes});}
     },{signal,shouldYield});
-    for(const asset of pending) {
-      if(signal.aborted||shouldYield()||Date.now()-started>=90000)break;
-      if(asset.telegramDone||tgBlocked||sends>=5)continue;
-      if(!asset.telegramDone&&!tgBlocked&&sends<5&&!signal.aborted){
-        sends++;this.log('CATALOG_TELEGRAM_STARTED',{key:asset.key});
+    const groups=[],posts=new Map();
+    for(const asset of pending.filter(a=>!a.telegramDone)) {
+      if(asset.kind!=='post'){groups.push([asset]);continue;}
+      if(!posts.has(asset.parent)){const group=[];posts.set(asset.parent,group);groups.push(group);}
+      posts.get(asset.parent).push(asset);
+    }
+    for(const group of groups) {
+      const first=group[0];
+      if(first.kind==='post')group.sort((a,b)=>this.state.posts.records[a.parent].parts[a.id]-this.state.posts.records[b.parent].parts[b.id]);
+      for(let offset=0;offset<group.length;offset+=10) {
+        if(signal.aborted||shouldYield()||Date.now()-started>=90000||tgBlocked||sends>=5)break;
+        const batch=group.slice(offset,offset+10),asset=batch[0];
         const label=asset.kind==='post'?'IG 新貼文':`IG 精選：${asset.title}`;
         const text=asset.kind==='post'?this.state.captions[asset.parent]?.text||'':'';
         const caption=[`@${this.username}`,label,dateJST(asset.takenAt),asset.code?`https://www.instagram.com/p/${asset.code}/`:'',text].filter(Boolean).join('\n');
-        const body={caption:[...caption].slice(0,900).join('')};
-        if(asset.mediaType===2){body.video=asset.mediaUrl;body.supports_streaming=true;}else body.photo=asset.mediaUrl;
-        let sent=false;
-        try{await sendTelegram(asset.mediaType===2?'sendVideo':'sendPhoto',body,{id:asset.key,kind:asset.kind==='post'?'post':'highlight',detectedAt:asset.detectedAt,publishedAt:asset.takenAt*1000});sent=true;}
-        catch(e){if(!e.message?.startsWith('TELEGRAM_'))throw e;ok=false;asset.lastAttemptAt=Date.now();const reason=/^TELEGRAM_[A-Z0-9_]+$/.test(e.message)?e.message:'CATALOG_TELEGRAM_ERROR';this.log('CATALOG_TELEGRAM_RETRY',{key:asset.key,reason});if(/_(401|403|429)$/.test(reason)||reason==='TELEGRAM_RETRY_WAIT')tgBlocked=true;}
-        if(sent){asset.telegramDone=true;this.persist();this.log('CATALOG_TELEGRAM_SENT',{key:asset.key});}
+        const captionSent=asset.kind==='post'&&Object.values(this.state.assets).some(a=>a.kind==='post'&&a.parent===asset.parent&&a.telegramDone);
+        const media=batch.map((a,index)=>({type:a.mediaType===2?'video':'photo',media:a.mediaUrl,
+          ...(a.mediaType===2?{supports_streaming:true}:{}),...(!captionSent&&index===0?{caption:[...caption].slice(0,900).join('')}:{})}));
+        const method=media.length>1?'sendMediaGroup':asset.mediaType===2?'sendVideo':'sendPhoto';
+        const body=media.length>1?{media}:{[media[0].type]:media[0].media,...(media[0].caption!==undefined?{caption:media[0].caption}:{}),...(asset.mediaType===2?{supports_streaming:true}:{})};
+        const ids=batch.map(a=>a.key),id=batch.length>1?`post:${asset.parent}:album:${batch.map(a=>a.id).join('-')}`:asset.key;
+        for(const a of batch)this.log('CATALOG_TELEGRAM_STARTED',{key:a.key});
+        let sent=false;sends++;
+        try{await sendTelegram(method,body,{id,ids,...(asset.kind==='post'?{postId:asset.parent,postOrder:this.state.posts.records[asset.parent].parts[asset.id]}:{}),kind:asset.kind==='post'?'post':'highlight',detectedAt:Math.min(...batch.map(a=>a.detectedAt)),publishedAt:asset.takenAt*1000});sent=true;}
+        catch(e){if(!e.message?.startsWith('TELEGRAM_'))throw e;ok=false;const reason=/^TELEGRAM_[A-Z0-9_]+$/.test(e.message)?e.message:'CATALOG_TELEGRAM_ERROR';for(const a of batch)this.log('CATALOG_TELEGRAM_RETRY',{key:a.key,reason});if(/_(401|403|429)$/.test(reason)||reason==='TELEGRAM_RETRY_WAIT')tgBlocked=true;}
+        for(const a of batch){if(sent)a.telegramDone=true;a.lastAttemptAt=Date.now();}
+        this.persist();
+        if(sent)for(const a of batch)this.log('CATALOG_TELEGRAM_SENT',{key:a.key});
+        // Keep a post's later chunks behind its failed chunk so captions and order stay stable.
+        if(!sent)break;
       }
-      asset.lastAttemptAt=Date.now();this.persist();
-      if(sends>=5||tgBlocked)break;
     }
     const pendingArchive=Object.values(this.state.assets).filter(a=>!a.archiveDone).length;
     const pendingTelegram=Object.values(this.state.assets).filter(a=>!a.telegramDone).length;
     const pendingCaptions=Object.values(this.state.captions).filter(c=>c.savedHash!==c.hash).length;
     this.log('CATALOG_STATUS',{posts:Object.keys(this.state.posts.records).length,highlights:Object.keys(this.state.highlights.records).length,pendingArchive,pendingTelegram,pendingCaptions,postsBaselineComplete:this.state.posts.baseline,highlightsBaselineComplete:this.state.highlights.baseline});
-    return ok&&!pendingArchive&&!pendingTelegram&&!pendingCaptions&&!this.state.posts.failures&&!this.state.highlights.failures&&!this.state.highlights.todo.some(h=>h.failures);
+    return ok&&!pendingArchive&&!pendingTelegram&&!pendingCaptions&&!this.state.posts.failures&&!this.state.posts.latestScan.failures&&!this.state.highlights.failures&&!this.state.highlights.todo.some(h=>h.failures);
   }
 }
