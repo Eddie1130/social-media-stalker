@@ -32,3 +32,13 @@
 2. TikTok 使用 cooperative owner loop，避免把現有分頁交易切成多 writer；browser IPC 等待時由同一 owner 處理媒體完成。若 future pump 變得耗時，需要由 metrics 再拆分。
 3. transport 工作保留現有退避，下一筆重建 browser；空回應最多額外重試一次，不無限重建、不把空回應當成成功。
 4. prepare 後若收件者設定在 HTTP 前改變，先保守重試而非丟棄內容；真正失去資格的工作由下一次 eligibility 檢查取消。
+
+## 2026-11-16 部署結果
+
+- 實作提交 `5cbc047`；本機 364 個 Node、145 個 Python 測試通過，npm audit 無已知漏洞。NAS 隔離環境 362 個 Node、4 個 X 整合案例、144 個 Python 測試通過；真實 Chromium 生命週期／重啟登入還原測試通過。
+- 10:24–10:28 HKT 啟動新版。53 個部署檔案 hash 全部吻合 manifest；catalog 映像 `8b39507ce1b0`，Telegram 映像 `cd66d549d83b`。
+- NAS 原始碼／私有設定、control/watch 狀態及 catalog profile 備份位於 `data/backups/nas-performance-20261116/`，舊映像保留 `before-perf-20261116` tag。初次狀態備份因直播 writer 仍活動而中止，停止該 writer 後重新完成，未使用不完整備份進行套用。
+- 實際採用停止相關 writer、備份、啟動 Telegram publisher、再啟動 IG／X／TikTok consumers 的順序，避免混版寫入與缺少 pressure summary。VPN 沒有重建。舊 catalog 停止超過 grace period 被 Docker 終止，profile 備份於停止後執行。
+- 驗收時本專案所有有 healthcheck 的服務皆 healthy；Telegram `pollOk/telegramOk/deliveryReady=true`、個人派送 pending=0，四個授權使用者與持續前進的 offset 保留。啟動後有短暫 400 重試，稍後自行消退，未清除收據或重設 offset。
+- TikTok 待下載由 653 降至 638；20 次媒體下載成功約 70 MB、17 個工作完成，5/16 個內容串流已有新成功結果。其餘仍需下一輪觀測，不能把 heartbeat healthy 當成所有內容均已刷新。原有 unresolved=1 保留。
+- 新版部署後的 24 小時唯讀觀測另存 `data/backups/nas-performance-20261116/observer.jsonl`。24 小時 soak 尚未完成，使用者實際點擊按鈕的體感延遲尚未重新驗收，不宣稱固定倍數加速。
