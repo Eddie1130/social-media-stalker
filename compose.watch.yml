@@ -9,6 +9,7 @@ services:
     env_file:
       - .env.telegram
     environment:
+      ARCHIVE_PRESSURE_ENABLED: ${ARCHIVE_PRESSURE_ENABLED:-1}
       TZ: Asia/Hong_Kong
       IG_TELEGRAM_CONTROL: ${IG_TELEGRAM_CONTROL:-1}
       IG_TARGET_USERNAMES: ${IG_TARGET_USERNAMES:-}
@@ -55,6 +56,7 @@ services:
     env_file:
       - .env.telegram
     environment:
+      ARCHIVE_PRESSURE_ENABLED: ${ARCHIVE_PRESSURE_ENABLED:-1}
       TZ: Asia/Hong_Kong
       IG_ARCHIVE_DIR: /downloads
       IG_TELEGRAM_CONTROL: ${IG_TELEGRAM_CONTROL:-1}

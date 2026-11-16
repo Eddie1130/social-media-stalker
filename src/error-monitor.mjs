@@ -1,15 +1,21 @@
+import { record } from './performance-metrics.mjs';
 import { formatJST } from './time-jst.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const log = (event, data = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
-export function atomic(file, value) {
+export function atomic(file,value) {
+ const started=performance.now();let outcome='error';
+ try {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.' + randomUUID() + '.tmp';
   const fd = fs.openSync(tmp, 'wx', 0o600);
   try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
+
+ outcome='ok';
+ } finally {record('settings_commit',performance.now()-started,{outcome});}
 }
 export function load(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }

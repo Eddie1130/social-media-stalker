@@ -137,13 +137,13 @@ class BrowserTransport:
         response = self.page.evaluate(
             """async url => {
           const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 25000);
-          try { const r = await fetch(url, {credentials:'include', signal:controller.signal}); return {status:r.status, text:await r.text()}; }
+          try { const r = await fetch(url, {credentials:'include', signal:controller.signal}); return {status:r.status, text:await r.text(),retryAfter:r.headers.get('Retry-After')}; }
           finally {clearTimeout(timer);}
         }""",
             url,
         )
         return SimpleNamespace(
-            status_code=response["status"], text=response["text"], url=url, history=[]
+            status_code=response["status"], text=response["text"], url=url, history=[],headers={"Retry-After":response.get("retryAfter")}
         )
 
     def close(self):

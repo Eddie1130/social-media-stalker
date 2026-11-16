@@ -68,7 +68,7 @@ export class ManualDelivery {
           }
           try {
             const response = await client.call(upload.method, upload.body, { files: upload.files, timeoutMs: client.baseUrl && client.baseUrl !== 'https://api.telegram.org' ? 3600000 : 180000,
-              beforeRequest: () => { entry.inflight = { group: entry.next, at: Date.now() }; this.persist(); } });
+              beforeRequest: () => { if(!this.settings().allowedIds.includes(request.userId))throw Error('TELEGRAM_RETRY_WAIT');entry.inflight = { group: entry.next, at: Date.now() }; this.persist(); } });
             const receipts = Array.isArray(response) ? response : [response];
             if (receipts.length !== group.length || receipts.some(r => !Number.isSafeInteger(r?.message_id))) throw Error('MANUAL_DELIVERY_UNCERTAIN');
             entry.messageIds ||= []; entry.messageIds.push(...receipts.map(r => r.message_id));
@@ -125,7 +125,7 @@ export class ManualDelivery {
       const file = group[i], filename = filenames[i], name = 'media' + i;
       const type = documents ? 'document' : file.type;
       const blob = await fs.openAsBlob(filename, { type: path.extname(filename) === '.mp4' ? 'video/mp4' : path.extname(filename) === '.png' ? 'image/png' : path.extname(filename) === '.webp' ? 'image/webp' : 'image/jpeg' });
-      files.push({ name, blob, filename: path.basename(filename) });
+      files.push({ name, blob, filename: path.basename(filename), sourcePath: filename });
       if (type === 'video') {
         const blob = new Blob([previews[i]], { type: 'image/jpeg' });
         files.push({ name: 'thumb' + i, blob, filename: 'thumbnail.jpg' });

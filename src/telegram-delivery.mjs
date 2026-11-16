@@ -36,6 +36,7 @@ export class PersonalDelivery {
       }
       s.legacyImported = true;
     }
+    for(const task of Object.values(s.pending))if(task.inflight){task.uncertain=true;delete task.inflight;}
     this.persist();
   }
   persist() {
@@ -91,6 +92,7 @@ export class PersonalDelivery {
       if (!['post', 'highlight'].includes(event.kind) || typeof event.id !== 'string' || !['sendPhoto', 'sendVideo', 'sendMediaGroup'].includes(event.method) || !Number.isFinite(event.publishedAt)) throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
       const media=catalogMedia(event.method,event.body),ids=event.ids??[event.id];
       if(!Array.isArray(ids)||ids.length!==media.length||ids.some(id=>typeof id!=='string'||!id)||new Set(ids).size!==ids.length||(media.length>1&&event.kind!=='post'))throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
+      if((event.postId!==undefined||event.postOrder!==undefined)&&(!/^\d+$/.test(event.postId)||!Number.isInteger(event.postOrder)||event.postOrder<1||event.kind!=='post'))throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
       for (const id of s.allowedIds) for (const name of new Set(names)) {
         const sub = subscribed(s, id, name), pref = sub?.notifications[event.kind];
         if (!sub || !mediaEnabled(s.users[id], event.at) || !pref.enabled || event.at < Math.max(sub.joinedAt, pref.since) || event.publishedAt < sub.joinedAt) continue;
@@ -104,7 +106,7 @@ export class PersonalDelivery {
         const request=mediaBody(selected);
         for(const i of indexes)if(receiptKeys[i]!==key)delete this.state.pending[receiptKeys[i]];
         this.enqueue(key, { userId: id, type: 'media', username: name, generation: sub.generation, kind: event.kind,
-          eligibilityAt: event.at, target: event.target, catalogKeys:indexes.map(i=>ids[i]),receiptKeys:indexes.map(i=>receiptKeys[i]),
+          eligibilityAt: event.at, target: event.target,...(event.postId!==undefined?{postId:event.postId,postOrder:event.postOrder}:{}), catalogKeys:indexes.map(i=>ids[i]),receiptKeys:indexes.map(i=>receiptKeys[i]),
           method:request.method, body:{...request.body,chat_id:id} });
       }
     } else throw Error('TELEGRAM_EVENT_TYPE_INVALID');
@@ -120,10 +122,20 @@ export class PersonalDelivery {
   }
   async drain(client, { limit = 20, stopping = () => false } = {}) {
     let count = 0, ok = true;
-    for (const [key, task] of Object.entries(this.state.pending).sort(([,a],[,b]) => a.at - b.at)) {
+    const blockedPosts=new Set();
+    const postKey=task=>task.postId?JSON.stringify([task.userId,task.generation,task.username,task.target,task.postId]):null;
+    const tasks=Object.entries(this.state.pending).sort(([,a],[,b])=>a.at-b.at);
+    // Sort within each post without disturbing other recipients' queue positions.
+    const postTasks=new Map();
+    for(const row of tasks){const id=postKey(row[1]);if(id){if(!postTasks.has(id))postTasks.set(id,[]);postTasks.get(id).push(row);}}
+    for(const rows of postTasks.values())rows.sort(([,a],[,b])=>a.postOrder-b.postOrder);
+    for (const row of tasks) {
+      const id=postKey(row[1]),[key,task]=id?postTasks.get(id).shift():row;
       if (stopping() || count >= limit) break;
       if (!this.eligible(task)) { delete this.state.pending[key]; this.persist(); continue; }
-      if (Date.now() < task.retryAt) { ok = false; continue; }
+      if (id&&blockedPosts.has(id)) { ok=false;continue; }
+      if(task.uncertain){if(id)blockedPosts.add(id);ok=false;if(!task.uncertaintyReported){task.uncertaintyReported=true;this.persist();this.log('PERSONAL_DELIVERY_UNCERTAIN',{reason:'TELEGRAM_RESULT_UNCERTAIN'});}continue;}
+      if (Date.now() < task.retryAt) { if(id)blockedPosts.add(id);ok = false; continue; }
       if (!['sendMessage', 'sendPhoto', 'sendVideo', 'sendMediaGroup'].includes(task.method) || String(task.body?.chat_id) !== task.userId) throw Error('TELEGRAM_PENDING_INVALID');
       // Refresh a queued catalog URL from the shared archive history, without re-sending
       // already acknowledged media or making another Instagram request.
@@ -141,19 +153,29 @@ export class PersonalDelivery {
       // Re-render persisted alerts so pre-upgrade retries cannot expose details.
       if (task.type === 'alert') task.body.text = alertText(this.settings(), task.userId, task.scope);
       count++;
+      const guarded={call:(method,body,options={})=>client.call(method,body,{...options,beforeRequest:()=>{
+        if(!this.eligible(task))throw Error('TELEGRAM_DELIVERY_CANCELLED');
+        return options.beforeRequest?.();
+      }})};
       try {
         if (task.type === 'alert' && task.scope.issueKey) {
-          await updateNotice(client, this.state, JSON.stringify([task.userId, task.scope.issueKey]), {
+          await updateNotice(guarded, this.state, JSON.stringify([task.userId, task.scope.issueKey]), {
             at: task.scope.at, userId: task.userId, text: task.body.text, recovery: task.scope.kind === 'recovery',
           }, () => this.persist());
-        } else if (task.type !== 'alert' || task.scope.kind !== 'recovery') await client.call(task.method, task.body);
+        } else if (task.type !== 'alert' || task.scope.kind !== 'recovery') await guarded.call(task.method,task.body,{beforeRequest:()=>{task.inflight=true;this.persist();}});
       }
       catch (error) {
+        if(id)blockedPosts.add(id);
+        if(error.message==='TELEGRAM_DELIVERY_CANCELLED'){delete this.state.pending[key];this.persist();continue;}
+        const rejected=/^(TELEGRAM_RETRY_WAIT|TELEGRAM_STOPPING|TELEGRAM_ERROR_(400|401|403|429))$/.test(error.message);
+        if(task.inflight&&!rejected){task.uncertain=true;delete task.inflight;this.persist();ok=false;continue;}
+        delete task.inflight;
         task.failures++; task.retryAt = Date.now() + Math.min(300, 15 * 2 ** Math.min(task.failures, 5)) * 1000;
         task.error = /^TELEGRAM_[A-Z0-9_]+$/.test(error.message) ? error.message : 'TELEGRAM_SEND_FAILED';
         this.persist(); this.log('PERSONAL_DELIVERY_RETRY', { userId: task.userId, username: task.username, reason: task.error });
         ok = false; continue;
       }
+      delete task.inflight;
       this.state.seen[key] = Date.now();
       for(const receiptKey of task.receiptKeys||[])this.state.seen[receiptKey]=Date.now();
       delete this.state.pending[key]; this.persist();
@@ -164,14 +186,14 @@ export class PersonalDelivery {
   daily(now, describe) {
     const time = new Date(now + 8 * 3600000), day = localDay(now);
     if (time.getUTCHours() < 20) return;
-    const s = this.settings();
+    const s = this.settings();let changed=false;
     for (const id of s.allowedIds) {
       if (!s.users[id]?.daily || this.state.summaries[id] === day) continue;
       this.enqueue(`summary:${day}:${id}`, { userId: id, type: 'summary', day,
         method: 'sendMessage', body: { chat_id: id, text: `每日摘要（香港時間 20:00）\n${describe(id)}`, reply_markup: { inline_keyboard: [[{ text: '🔄 查看最新狀態', callback_data: 'status' }]] } } });
-      this.state.summaries[id] = day;
+      this.state.summaries[id] = day;changed=true;
     }
-    this.persist();
+    if(changed)this.persist();
   }
 }
 export const localDay = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 10);

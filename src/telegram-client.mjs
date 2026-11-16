@@ -1,3 +1,4 @@
+import { record } from './performance-metrics.mjs';
 import { telegramApiBase } from './telegram-endpoint.mjs';
 import path from 'node:path';
 import { atomic, load } from './error-monitor.mjs';
@@ -13,9 +14,9 @@ export class TelegramClient {
     this.slots = []; this.scheduling = false; this.wakeSlots = null;
     this.signal?.addEventListener('abort', () => this.wakeSlots?.(), { once: true });
   }
-  acquireSlot(chat, priority) {
+  acquireSlot(chat, priority, start) {
     return new Promise((resolve, reject) => {
-      this.slots.push({ chat, priority, resolve, reject });
+      this.slots.push({ chat, priority, resolve, reject, start });
       this.wakeSlots?.();
       if (!this.scheduling) void this.scheduleSlots();
     });
@@ -42,22 +43,22 @@ export class TelegramClient {
           continue;
         }
         this.slots.splice(this.slots.indexOf(slot), 1);
-        this.nextAt = now + 40;
-        if (slot.chat) this.chats.set(slot.chat, now + 1100);
-        slot.resolve();
+        try {
+          const result=slot.start?.();
+          now=Math.max(now,Date.now());
+          this.nextAt=now+40;
+          if(slot.chat)this.chats.set(slot.chat,now+1100);
+          slot.resolve(result);
+        } catch(error) {slot.reject(error);}
       }
     } catch (error) {
       for (const slot of this.slots.splice(0)) slot.reject(error);
     } finally { this.scheduling = false; }
   }
-  async call(method, body, { polling = false, priority = false, files = [], timeoutMs, beforeRequest } = {}) {
+  async call(method, body, { polling = false, priority = false, files = [], timeoutMs, beforeRequest, prepareRequest, beforeSend } = {}) {
     if (this.signal?.aborted) throw Error('TELEGRAM_STOPPING');
     if (Date.now() < this.rate.retryAt) throw Error('TELEGRAM_RETRY_WAIT');
-    if (!polling) {
-      const acknowledgement = method === 'answerCallbackQuery';
-      await this.acquireSlot(acknowledgement ? '' : String(body.chat_id || ''), priority || acknowledgement);
-      if (Date.now() < this.rate.retryAt) throw Error('TELEGRAM_RETRY_WAIT');
-    }
+    if (prepareRequest) await prepareRequest();
     let payload = JSON.stringify(body), headers = { 'content-type': 'application/json' };
     if (files.length) {
       payload = new FormData(); headers = {};
@@ -65,15 +66,25 @@ export class TelegramClient {
       for (const file of files) payload.append(file.name, file.blob, file.filename);
     }
     if (this.signal?.aborted) throw Error('TELEGRAM_STOPPING');
-    beforeRequest?.();
-    let response, data;
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}/bot${this.token}/${method}`, {
-        method: 'POST', headers, body: payload,
-        signal: AbortSignal.any([...(this.signal ? [this.signal] : []), AbortSignal.timeout(timeoutMs || (polling ? 25000 : (files.length || /file:\/\//.test(JSON.stringify(body))) && this.baseUrl !== 'https://api.telegram.org' ? 3600000 : 20000))]),
+    await beforeRequest?.();
+    let response,data,httpStarted;
+    const slotStarted=performance.now();
+    const send=()=>{
+      if(this.signal?.aborted)throw Error('TELEGRAM_STOPPING');
+      if(Date.now()<this.rate.retryAt)throw Error('TELEGRAM_RETRY_WAIT');
+      beforeSend?.();
+      record('api_slot',performance.now()-slotStarted,{lane:priority||method==='answerCallbackQuery'?'interactive':'media'});
+      httpStarted=performance.now();
+      return this.fetchImpl(`${this.baseUrl}/bot${this.token}/${method}`,{
+        method:'POST',headers,body:payload,
+        signal:AbortSignal.any([...(this.signal?[this.signal]:[]),AbortSignal.timeout(timeoutMs||(polling?25000:(files.length||/file:\/\//.test(JSON.stringify(body)))&&this.baseUrl!=='https://api.telegram.org'?3600000:20000))]),
       });
-      data = await response.json();
-    } catch { throw Error('TELEGRAM_NETWORK_OR_RESPONSE_ERROR'); }
+    };
+    try {
+      response=await (polling?send():this.acquireSlot(method==='answerCallbackQuery'?'':String(body.chat_id||''),priority||method==='answerCallbackQuery',send));
+      data=await response.json();
+    }catch(error){if(/^TELEGRAM_[A-Z0-9_]+$/.test(error.message))throw error;throw Error('TELEGRAM_NETWORK_OR_RESPONSE_ERROR');}
+    finally {if(httpStarted!==undefined)record('api_http',performance.now()-httpStarted,{outcome:data?.ok===true?'ok':'error'});}
     if (!response.ok || data.ok !== true) {
       // Telegram returns 400 for a successful no-op edit. Treat only this exact case as acknowledged.
       if (method === 'editMessageText' && data.error_code === 400 && /^Bad Request: message is not modified/.test(data.description || '')) return true;

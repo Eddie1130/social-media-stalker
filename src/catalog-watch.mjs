@@ -1,3 +1,7 @@
+import { archiveLimits } from './archive-pressure.mjs';
+import { AtomicStateStore } from './atomic-state-store.mjs';
+import { ArchiveProgress } from './archive-progress.mjs';
+import { record } from './performance-metrics.mjs';
 import { archiveBatch } from './archive-batch.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -72,7 +76,13 @@ export class CatalogWatcher {
     const file=path.resolve(this.root,relative);
     if(!file.startsWith(path.resolve(this.root)+path.sep))throw Error('CATALOG_INVALID_PATH');return file;
   }
-  persist(){atomic(this.file,this.state);if(!fs.existsSync(this.required))fs.writeFileSync(this.required,'required',{flag:'wx',mode:0o600});}
+  persist(){atomic(this.file,this.state);this.asyncStore=null;if(!fs.existsSync(this.required))fs.writeFileSync(this.required,'required',{flag:'wx',mode:0o600});}
+  async persistAsync(){
+    this.asyncStore ||= new AtomicStateStore({file:this.file,initial:this.state});
+    const snapshot=structuredClone(this.state),started=performance.now();
+    await this.asyncStore.transact(()=>snapshot);
+    record('settings_commit',performance.now()-started,{platform:'ig',outcome:'ok'});
+  }
   addAsset(kind,parent,part,record,title,code,quiet) {
     if(!idOK(part.id)||!validMediaUrl(part.mediaUrl)||![1,2].includes(part.mediaType))throw Error('CATALOG_INVALID_MEDIA');
     const key=`${kind}:${parent}:${part.id}`,old=this.state.assets[key];
@@ -124,6 +134,8 @@ export class CatalogWatcher {
       const latest=task==='latestPosts',group=latest?'posts':task;
       if(latest&&(!this.state.posts.baseline||!this.state.posts.cursor))continue;
       const state=latest?this.state.posts.latestScan:this.state[group];if(signal.aborted||Date.now()<state.nextAt)continue;
+      const historical=!latest&&((group==='posts'&&!!state.cursor)||(group==='highlights'&&!state.baseline));
+      if(historical&&!archiveLimits().allowHistoricalDiscovery){if(Date.now()-(this.lastHistoricalQuery||0)<60000)continue;this.lastHistoricalQuery=Date.now();}
       const refreshFailedTray = group === 'highlights' && state.todo.length > 0 && state.todo.every(h => h.failures > 0) && Date.now() - (state.lastTrayAt || 0) >= this.highlightsInterval * 1000;
       const due = group === 'highlights' ? state.todo.find(h => !h.retryAt || Date.now() >= h.retryAt) : null;
       if (group === 'highlights' && state.todo.length && !due && !refreshFailedTray) continue;
@@ -155,6 +167,9 @@ export class CatalogWatcher {
     try { if (!(await fsp.stat(this.root)).isDirectory()) throw Error('CATALOG_ROOT_NOT_DIRECTORY'); }
     catch(e) { this.log('CATALOG_STORAGE_ERROR',{reason:safeReason(e)}); return false; }
     this.log('CATALOG_STORAGE_OK');
+    this.asyncStore ||= new AtomicStateStore({file:this.file,initial:this.state});
+    const progress=new ArchiveProgress({commit:()=>this.persistAsync()});
+    const captions=[];
     for(const [id,caption] of Object.entries(this.state.captions).filter(([,c])=>c.savedHash!==c.hash).sort(([,a],[,b])=>(a.lastAttemptAt||0)-(b.lastAttemptAt||0)).slice(0,10)) {
       if(signal.aborted||shouldYield())break;
       caption.lastAttemptAt=Date.now();
@@ -163,23 +178,26 @@ export class CatalogWatcher {
         const temp=file+'.part';await fsp.writeFile(temp,caption.text,{mode:0o644});
         const handle=await fsp.open(temp,'r+');try{await handle.sync();}finally{await handle.close();}
         await fsp.rename(temp,file);caption.savedHash=caption.hash;
-      }catch(e){ok=false;this.persist();this.log('CATALOG_CAPTION_RETRY',{id,reason:archiveReason(e)});continue;}
-      this.persist();this.log('CATALOG_CAPTION_SAVED',{id});
+      }catch(e){ok=false;await this.persistAsync();this.log('CATALOG_CAPTION_RETRY',{id,reason:archiveReason(e)});continue;}
+      const completion=progress.complete('caption:'+id,{}).then(()=>this.log('CATALOG_CAPTION_SAVED',{id}));void completion.catch(()=>{});captions.push(completion);
     }
+    await Promise.all([...captions,progress.flush()]);
     const pending=Object.values(this.state.assets).filter(a=>!a.archiveDone||!a.telegramDone).sort((a,b)=>(a.lastAttemptAt||0)-(b.lastAttemptAt||0));
     await archiveBatch(pending.filter(asset=>!asset.archiveDone),async asset=>{
       this.log('CATALOG_MEDIA_STARTED',{key:asset.key});
       let saved;
       try{saved=await this.downloader(this.root,asset.base,asset,{signal,timeoutMs:45000});}
       catch(e){if(signal.aborted||shouldYield())return;ok=false;asset.lastAttemptAt=Date.now();this.log('CATALOG_ARCHIVE_RETRY',{key:asset.key,reason:archiveReason(e)});}
-      if(saved){asset.archiveDone=true;asset.relativePath=saved.relativePath;asset.bytes=saved.bytes;this.persist();this.log('CATALOG_MEDIA_SAVED',{key:asset.key,path:saved.relativePath,bytes:saved.bytes});}
-    },{signal,shouldYield});
+      if(saved){asset.archiveDone=true;asset.relativePath=saved.relativePath;asset.bytes=saved.bytes;await progress.complete(asset.key,{});this.log('CATALOG_MEDIA_SAVED',{key:asset.key,path:saved.relativePath,bytes:saved.bytes});}
+    },{signal,shouldYield,concurrency:archiveLimits().downloadConcurrency});
+    await progress.flush();
     const groups=[],posts=new Map();
     for(const asset of pending.filter(a=>!a.telegramDone)) {
       if(asset.kind!=='post'){groups.push([asset]);continue;}
       if(!posts.has(asset.parent)){const group=[];posts.set(asset.parent,group);groups.push(group);}
       posts.get(asset.parent).push(asset);
     }
+    groups.sort((a,b)=>(this.state.posts.records[a[0].parent]?.index??Infinity)-(this.state.posts.records[b[0].parent]?.index??Infinity));
     for(const group of groups) {
       const first=group[0];
       if(first.kind==='post')group.sort((a,b)=>this.state.posts.records[a.parent].parts[a.id]-this.state.posts.records[b.parent].parts[b.id]);
@@ -197,10 +215,10 @@ export class CatalogWatcher {
         const ids=batch.map(a=>a.key),id=batch.length>1?`post:${asset.parent}:album:${batch.map(a=>a.id).join('-')}`:asset.key;
         for(const a of batch)this.log('CATALOG_TELEGRAM_STARTED',{key:a.key});
         let sent=false;sends++;
-        try{await sendTelegram(method,body,{id,ids,kind:asset.kind==='post'?'post':'highlight',detectedAt:Math.min(...batch.map(a=>a.detectedAt)),publishedAt:asset.takenAt*1000});sent=true;}
+        try{await sendTelegram(method,body,{id,ids,...(asset.kind==='post'?{postId:asset.parent,postOrder:this.state.posts.records[asset.parent].parts[asset.id]}:{}),kind:asset.kind==='post'?'post':'highlight',detectedAt:Math.min(...batch.map(a=>a.detectedAt)),publishedAt:asset.takenAt*1000});sent=true;}
         catch(e){if(!e.message?.startsWith('TELEGRAM_'))throw e;ok=false;const reason=/^TELEGRAM_[A-Z0-9_]+$/.test(e.message)?e.message:'CATALOG_TELEGRAM_ERROR';for(const a of batch)this.log('CATALOG_TELEGRAM_RETRY',{key:a.key,reason});if(/_(401|403|429)$/.test(reason)||reason==='TELEGRAM_RETRY_WAIT')tgBlocked=true;}
         for(const a of batch){if(sent)a.telegramDone=true;a.lastAttemptAt=Date.now();}
-        this.persist();
+        await this.persistAsync();
         if(sent)for(const a of batch)this.log('CATALOG_TELEGRAM_SENT',{key:a.key});
         // Keep a post's later chunks behind its failed chunk so captions and order stay stable.
         if(!sent)break;
