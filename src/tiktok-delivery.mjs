@@ -1,3 +1,4 @@
+import { videoAttributes, videoPreview } from './video-attributes.mjs';
 import { updateNotice, noticeRecipients } from './telegram-notices.mjs';
 import { mediaEnabled } from './telegram-settings.mjs';
 import { tikTokContentKinds } from './tiktok-settings.mjs';
@@ -44,9 +45,9 @@ export class TikTokDelivery extends XDelivery {
         const entry = this.state.receipts[key] ||= { nextText: 0, nextGroup: 0, failures: 0 };
         if (entry.done || Date.now() < (entry.retryAt || 0)) continue;
         if (!this.eligible(event, recipient)) { entry.done = true; this.persist(); continue; }
-        if (event.kind === 'notice' && typeof event.noticeKey === 'string') {
+        if ((event.kind === 'notice' && typeof event.noticeKey === 'string') || event.kind === 'start') {
           try {
-            await updateNotice(client, this.state, JSON.stringify([recipient.userId, event.noticeKey]), { at: event.at, userId: recipient.userId, text: event.text, recovery: event.noticeKind === 'recovery' }, () => this.persist());
+            await updateNotice(client, this.state, JSON.stringify([recipient.userId, event.kind === 'start' ? `recording-start:${event.username}:${event.at}` : event.noticeKey]), { at: event.at, userId: recipient.userId, text: event.text, recovery: event.noticeKind === 'recovery' }, () => this.persist());
             entry.done = true; delete entry.retryAt; this.persist();
           } catch (error) {
             if (!/^TELEGRAM_/.test(error.message)) throw error;
@@ -63,6 +64,8 @@ export class TikTokDelivery extends XDelivery {
         const content = tikTokContentKinds.includes(event.kind);
         const items = content ? tikTokContentPlan(event, this.root) : [null, ...event.files];
         for (let i = entry.nextGroup; i < items.length && !stopping(); i++) {
+          if (event.kind === 'video' && !items[i]) { entry.nextGroup = i + 1; this.persist(); continue; }
+          let files = [];
           let body = { chat_id: recipient.userId, text: event.text }, method = 'sendMessage';
           if (content) { method = items[i].method; body = { chat_id: recipient.userId, ...contentBody(this.root, event, items[i]) }; }
           else if (items[i]) {
@@ -71,9 +74,19 @@ export class TikTokDelivery extends XDelivery {
             const root = fs.realpathSync(this.root), filename = fs.realpathSync(path.join(root, relative));
             if (!filename.startsWith(root + path.sep) || !fs.statSync(filename).isFile() || fs.statSync(filename).size > 2_000_000_000) throw Error('TIKTOK_FILE_INVALID');
             method = 'sendVideo';
-            body = { chat_id: recipient.userId, video: 'file://' + filename, caption: `TikTok @${event.username}（${i}/${event.files.length}）`, supports_streaming: true };
+            body = { chat_id: recipient.userId, video: 'file://' + filename, caption: `🎥 TikTok LIVE recording\n${path.basename(filename)}`, supports_streaming: true };
+            const attributes = await videoAttributes(filename);
+            if (attributes) {
+              Object.assign(body, attributes);
+              const preview = await videoPreview(filename, attributes);
+              if (preview) {
+                const blob = new Blob([preview], { type: 'image/jpeg' });
+                files = [{ name: 'thumbnail', blob, filename: 'thumbnail.jpg' }, { name: 'cover0', blob, filename: 'cover.jpg' }];
+                body.thumbnail = 'attach://thumbnail'; body.cover = 'attach://cover0';
+              }
+            }
           }
-          const outcome = await this.send(client, entry, method, body, [], method === 'sendMediaGroup' ? body.media.length : 1, () => this.eligible(event, recipient));
+          const outcome = await this.send(client, entry, method, body, files, method === 'sendMediaGroup' ? body.media.length : 1, () => this.eligible(event, recipient));
           if (outcome !== 'sent') { ok = false; break; }
           entry.nextGroup = i + 1; this.persist();
         }

@@ -61,12 +61,13 @@ test('TikTok events share one local file, receipts persist, revoked users and ol
   s.allowedIds=['100'];
   const delivery = new TikTokDelivery({...f,settings:()=>s});
   assert.equal(await delivery.drain(client),true);
-  assert.equal(calls.length,2);
-  assert.ok(calls[1][1].video.startsWith('file://'));
-  assert.equal(calls[1][1].chat_id,'100');
+  assert.equal(calls.length,1);
+  assert.ok(calls[0][1].video.startsWith('file://'));
+  assert.equal(calls[0][1].chat_id,'100');
+  assert.equal(calls[0][1].caption,'🎥 TikTok LIVE recording\ntest.mp4');
   const restarted = new TikTokDelivery({...f,settings:()=>s});
   atomic(eventFile,event); await restarted.drain(client);
-  assert.equal(calls.length,2);
+  assert.equal(calls.length,1);
   assert.ok(fs.existsSync(path.join(f.root,relative)));
 });
 test('missing/corrupt TikTok events do not crash shared controller; disabled notifications cancel pending videos', async t => {
@@ -173,4 +174,46 @@ test('manual TikTok downloads enqueue without subscriptions and enforce ten link
   assert.equal(delivery.eligible(event, { userId: '200' }), false);
   applyUpdate(s, msg(2, 100, Array(11).fill('vt.tiktok.com/ABC/').join(' ')));
   assert.equal(Object.keys(s.tiktokRequests).length, 1);
+});
+
+test('finished recording removes only its own start, including when cleanup arrives first', async t => {
+  const f=fixture(t),s=f.settings;
+  applyUpdate(s,msg(1,100,'/ttadd alice'),1000);
+  const recipients=[{userId:'100',generation:s.users['100'].tiktokTargets.alice.generation}];
+  const delivery=new TikTokDelivery({...f,settings:()=>s});
+  const calls=[],client={call:async(method,body,opts)=>{opts?.beforeRequest?.();calls.push([method,body]);return{message_id:calls.length};}};
+  const enqueue=(letter,event)=>atomic(path.join(f.stateDir,'tiktok/events',letter.repeat(64)+'.json'),{username:'alice',at:2000,text:'start',files:[],recipients,...event});
+  enqueue('a',{kind:'start'}); await delivery.drain(client);
+  enqueue('b',{kind:'start',at:3000}); await delivery.drain(client);
+  enqueue('c',{kind:'notice',at:4000,text:'',noticeKey:'recording-start:alice:2000',noticeKind:'recovery'}); await delivery.drain(client);
+  assert.deepEqual(calls.map(c=>c[0]),['sendMessage','sendMessage','deleteMessage']);
+  assert.equal(calls[2][1].message_id,1);
+  enqueue('d',{kind:'start'}); await delivery.drain(client);
+  assert.equal(calls.length,3);
+});
+
+test('LIVE video sends portrait dimensions and matching thumbnail and cover', async t => {
+  const { execFileSync } = await import('node:child_process');
+  const f=fixture(t),s=f.settings;
+  applyUpdate(s,msg(1,100,'/ttadd alice'),1000);
+  const relative='tiktok/alice/live/TK_alice_2026.11.16_11-31-52.mp4';
+  const filename=path.join(f.root,relative);fs.mkdirSync(path.dirname(filename),{recursive:true});
+  try { execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc=size=180x320:rate=5','-t','1','-c:v','mpeg4',filename]); }
+  catch(error) { if(error.code==='ENOENT'){t.skip('ffmpeg unavailable');return;} throw error; }
+  atomic(path.join(f.stateDir,'tiktok/events','e'.repeat(64)+'.json'),{username:'alice',kind:'video',at:2000,text:'complete',files:[relative],recipients:[{userId:'100',generation:s.users['100'].tiktokTargets.alice.generation}]});
+  const calls=[],client={call:async(method,body,opts)=>{opts.beforeRequest?.();calls.push({method,body,files:opts.files});return{message_id:1};}};
+  assert.equal(await new TikTokDelivery({...f,settings:()=>s}).drain(client),true);
+  assert.equal(calls.length,1);const {body,files}=calls[0];
+  assert.equal(body.width,180);assert.equal(body.height,320);
+  assert.equal(body.thumbnail,'attach://thumbnail');assert.equal(body.cover,'attach://cover0');
+  assert.equal(files.length,2);assert.ok(files.every(f=>f.blob.size>0));
+});
+
+test('plain download failure notices remain visible', async t => {
+  const f=fixture(t),s=f.settings;
+  applyUpdate(s,msg(1,100,'/ttadd alice'),1000);
+  atomic(path.join(f.stateDir,'tiktok/events','f'.repeat(64)+'.json'),{username:'alice',kind:'notice',at:2000,text:'download failed',files:[],recipients:[{userId:'100',generation:s.users['100'].tiktokTargets.alice.generation}]});
+  const calls=[],client={call:async(method,body,opts)=>{opts.beforeRequest?.();calls.push([method,body.text]);return{message_id:1};}};
+  assert.equal(await new TikTokDelivery({...f,settings:()=>s}).drain(client),true);
+  assert.deepEqual(calls,[['sendMessage','download failed']]);
 });

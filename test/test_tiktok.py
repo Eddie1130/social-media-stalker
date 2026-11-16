@@ -55,7 +55,7 @@ class TikTokWorkerTests(unittest.TestCase):
         w.finalize(job)
         self.assertGreater(dest.stat().st_size, 4096)
         self.assertFalse(source.exists())
-        event = json.loads(next((w.STATE / 'events').glob('*.json')).read_text())
+        event = next(e for e in (json.loads(p.read_text()) for p in (w.STATE / 'events').glob('*.json')) if e['kind'] == 'video')
         self.assertEqual(event['kind'], 'video')
         self.assertEqual(event['files'], [str(dest.relative_to(w.ROOT))])
 
@@ -69,9 +69,20 @@ class TikTokWorkerTests(unittest.TestCase):
         job = {'source': str(source), 'dest': str(dest), 'username': 'alice', 'recipients': [], 'at': 1000}
         w.finalize(job, limit=60000)
         self.assertGreater(dest.stat().st_size, 60000)
-        event = json.loads(next((w.STATE / 'events').glob('*.json')).read_text())
+        event = next(e for e in (json.loads(p.read_text()) for p in (w.STATE / 'events').glob('*.json')) if e['kind'] == 'video')
         self.assertGreater(len(event['files']), 1)
         self.assertTrue(all((w.ROOT / f).stat().st_size <= 60000 for f in event['files']))
+
+    def test_start_cleanup_is_durable_and_scoped_to_recording(self):
+        job = {'username': 'alice', 'recipients': [], 'at': 1000,
+               'dest': str(self.root / 'recording.mp4')}
+        w.cleanup_recording_start(job)
+        w.cleanup_recording_start(job)
+        events = list((w.STATE / 'events').glob('*.json'))
+        self.assertEqual(len(events), 1)
+        event = json.loads(events[0].read_text())
+        self.assertEqual(event['noticeKey'], 'recording-start:alice:1000')
+        self.assertEqual(event['noticeKind'], 'recovery')
 
     def test_failed_conversion_keeps_original(self):
         source = self.root / 'broken.ts'

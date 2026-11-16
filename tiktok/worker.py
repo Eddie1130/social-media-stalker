@@ -96,6 +96,12 @@ def run_tool(args):
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1800)
 
 
+def cleanup_recording_start(job):
+    emit(job['username'], 'notice', '', job['recipients'],
+         identity='recording-start-cleanup:' + str(job['dest']),
+         notice_key=f"recording-start:{job['username']}:{job['at']}", notice_kind='recovery')
+
+
 def finalize(job, limit=1_900_000_000):
     source = Path(job['source'])
     dest = Path(job['dest'])
@@ -122,8 +128,9 @@ def finalize(job, limit=1_900_000_000):
             if seconds <= 1:
                 raise ValueError('TIKTOK_SPLIT_LIMIT_FAILED')
             seconds = max(1, seconds // 2)
-    emit(job['username'], 'video', f"TikTok @{job['username']} 錄影完成；完整 MP4 已保留本機。", job['recipients'],
+    emit(job['username'], 'video', '', job['recipients'],
          [str(p.relative_to(ROOT)) for p in parts], job['at'], 'video:' + str(dest))
+    cleanup_recording_start(job)
     # Preserve source until successful MP4 conversion and durable delivery enqueue.
     source.unlink(missing_ok=True)
 
@@ -185,11 +192,18 @@ def record_account(name, cookie_map):
                     emit(name, 'start', f'🔴 TikTok @{name} 已開播，開始錄影。', self.recipients, at=self.started)
                     self.announced = True
                     status(name, '錄影中')
+                if chunk and getattr(self, '_integration_interrupted', False):
+                    self._integration_interrupted = False
+                    emit(name, 'notice', '', self.recipients,
+                         notice_key=f'recording:{name}', notice_kind='recovery')
+                elif chunk and not getattr(self, '_integration_recovered', False):
+                    self._integration_recovered = True
                     emit(name, 'notice', '', self.recipients,
                          notice_key=f'recording:{name}', notice_kind='recovery')
                 yield chunk
 
         def _tiktok_alert(self, kind, reason, stage=None):
+            self._integration_interrupted = True
             now = time.monotonic()
             previous = getattr(self, '_last_integration_alert', 0)
             if previous and now - previous < 600:
@@ -201,6 +215,7 @@ def record_account(name, cookie_map):
             job = {'source': source, 'dest': str(Path(source).parent / (self.stem + '.mp4')), 'username': name, 'recipients': self.recipients, 'at': self.started}
             file = STATE / 'processing' / (self.stem + '_' + name + '.json')
             atomic(file, job)
+            cleanup_recording_start(job)
             if STOP.is_set():
                 emit(name, 'notice', f'TikTok @{name} 錄影因服務停止而中斷，已保留原檔及轉檔工作。', self.recipients, notice_key=f'recording:{name}', notice_kind='error')
             PROCESSING.put(file)
@@ -229,8 +244,9 @@ def record_account(name, cookie_map):
                 rec.room_id = room
                 rec.recipients = recipients
                 rec.started = int(time.time() * 1000)
-                rec.stem = datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y%m%d_%H%M%S_JST_') + str(room)
+                rec.stem = datetime.now(ZoneInfo('Asia/Tokyo')).strftime(f'TK_{name}_%Y.%m.%d_%H-%M-%S')
                 rec.announced = False
+                rec._integration_recovered = False
                 rec._recording_bytes = rec._stream_retry_failures = 0
                 rec._recording_phase = 'starting'
                 rec.start_recording(name, room)
@@ -275,6 +291,7 @@ def main():
         if source.exists() and source.stat().st_size >= 4096:
             file = STATE / 'processing' / capture.name
             atomic(file, job)
+            cleanup_recording_start(job)
             emit(job['username'], 'notice', 'TikTok 錄影曾因服務停止而中斷；正在處理保留的原檔。', job['recipients'], notice_key=f"recording:{job['username']}", notice_kind='error')
         capture.unlink()
     for file in (STATE / 'processing').glob('*.json'):
