@@ -46,3 +46,15 @@ test('partially completed X history does not claim complete after archival', () 
   assert.match(status.text, /等待重試或補查/);
   assert.doesNotMatch(status.text, /已完成，持續監控/);
 });
+test('IG completed initial discovery distinguishes routine rescans', () => {
+  const catalog = { posts: { baseline: true, cursor: 'next-page' }, highlights: { baseline: true, todo: [{ id: '1' }] }, assets: {} };
+  const status = overview('ig', { username: 'alice', target: '123' }, catalog).status;
+  assert.match(status.text, /首次搜尋已完成，例行檢查新內容/);
+  assert.doesNotMatch(status.text, /仍在搜尋新貼文/);
+});
+test('cancelled historical jobs do not block successful X monitoring', () => {
+  const read = (file, fallback) => file.endsWith('health.json') ? { at: now, targets: [{ username: 'alice', lastSuccess: 1000 }], historyJobs: [{ username: 'alice', status: 'cancelled', reported: true }, { username: 'alice', status: 'complete', fetchDone: true, reported: true }] } : fallback;
+  const status = platformStatus({ xTargets: { alice: {} } }, 'x', '', read, now);
+  assert.match(status.text, /已完成，持續監控新內容/);
+  assert.doesNotMatch(status.text, /進度待確認/);
+});
