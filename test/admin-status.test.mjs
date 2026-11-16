@@ -19,3 +19,34 @@ test('owner callback renders requested global page', () => {
   applyUpdate(s, click('admin-status:2'), 1, describe);
   assert.equal(s.replies['reply:1'].body.text, 'global page 2');
 });
+
+import { adminStatus } from '../src/admin-status.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+test('global status deduplicates subscriptions and paginates all accounts', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-status-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const s = setup();
+  s.users['100'].xTargets = { alice: {} };
+  s.users['200'].xTargets = Object.fromEntries(['alice', ...Array.from({ length: 13 }, (_, i) => `user${i}`)].map(n => [n, {}]));
+  fs.mkdirSync(path.join(dir, 'x'));
+  fs.writeFileSync(path.join(dir, 'x/health.json'), JSON.stringify({ at: 1000, targets: [{ username: 'alice', pending: 7 }] }));
+  const first = adminStatus(s, dir, 0, 1000);
+  assert.match(first.text, /14 個帳號 · 待下載 7/);
+  assert.match(first.text, /@alice · 正常\n待下載：7/);
+  assert.match(first.text, /第 1\/2 頁/);
+  assert.match(adminStatus(s, dir, 999, 1000).text, /第 2\/2 頁/);
+  assert.ok(first.text.length < 4096);
+});
+test('empty global status is usable', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-empty-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  assert.match(adminStatus(setup(), dir).text, /尚未新增帳號/);
+});
+test('revoked users do not count as active monitors', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-revoked-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const s = setup(); s.allowedIds = ['100']; s.users['200'].targets = { removed: {} };
+  assert.doesNotMatch(adminStatus(s, dir).text, /@removed/);
+});

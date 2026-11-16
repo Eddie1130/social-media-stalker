@@ -1,3 +1,4 @@
+import { adminStatus } from './admin-status.mjs';
 import {createPressurePublisher} from './archive-pressure.mjs';
 import { writeSnapshot } from './atomic-state-store.mjs';
 import { DeliveryBroker } from './telegram-delivery-broker.mjs';
@@ -91,6 +92,7 @@ export async function run({ env = process.env, args = process.argv } = {}) {
   const transact=async mutate=>{const started=performance.now(),previous=JSON.stringify(settings);settings=await store.transact(mutate);if(JSON.stringify(settings)!==previous)broker?.update(settings);record('settings_commit',performance.now()-started);};
   const persistSettings = async () => {const snapshot=structuredClone(settings);await transact(()=>snapshot);};
   const describe = id => describeUser(settings, id, stateDir, env.IG_WATCHDOG_DIR || '/app/watchdog-state');
+  describe.admin = page => adminStatus(settings, stateDir, page);
   describe.platform = (id, platform) => platformStatus(settings.users[id], platform, stateDir, (file, fallback) => {
     try { return load(file, fallback); } catch { return fallback; }
   }, Date.now(), { settings, id });

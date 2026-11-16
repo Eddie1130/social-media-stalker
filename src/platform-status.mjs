@@ -10,8 +10,9 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
   const live = platform === 'tt' ? read(path.join(stateDir, 'tiktok/health.json'), null) : null;
   const fresh = h => h && Number.isFinite(h.at) && Math.abs(now - h.at) <= 120000 && !['stopped', 'fatal'].includes(h.phase);
   const history = platform === 'x' ? xHistoryReports(user, settings, id, stateDir, read, health) : [];
-  const accounts = {}, backfills = {}; let pending = 0;
+  const accounts = {}, backfills = {}, accountPending = {}; let pending = 0;
   for (const name of names) {
+    const before = pending;
     const sub = user[config.key][name];
     const target = Array.isArray(health?.targets) ? health.targets.find(t => t?.username === name) : health?.targets?.[name];
     let state = !fresh(health) ? '狀態未更新' : !target ? '等待首次檢查' : target.failures ? '異常／重試中' : '正常';
@@ -51,9 +52,10 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
       if (/異常/.test(livePhase || '')) icon = '🔴';
       else if ((!fresh(live) || /重試|停止/.test(livePhase || '')) && icon === '🟢') icon = '🟡';
     }
+    accountPending[name] = pending - before;
     const muted = user.mediaNotifications === false || (sub?.notifications && !Object.values(sub.notifications).some(p => p.enabled));
     accounts[name] = `${icon} @${name} · ${state}${muted ? ' · 🔕' : ''}`;
   }
   const text = [`${config.title}｜${names.length} 個帳號`, ...(names.length ? Object.values(accounts) : ['尚未新增帳號。']), `待下載：${pending}`].join('\n');
-  return { accounts, backfills, pending, text, history };
+  return { accounts, backfills, accountPending, pending, text, history };
 }

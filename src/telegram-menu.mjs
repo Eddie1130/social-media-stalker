@@ -89,7 +89,8 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
     } else if (action === 'follow' && validUsername(name)) {
       if (!userTarget(user, name)) put(user.targets, name, subscription(now));
       result = accountMenu(user, name);
-    } else if (action === 'status') result = panel(statusText(id), [[button('🔄 重新整理', 'status')], back]);
+    } else if (action === 'admin-status' && id === settings.ownerId && /^\d{1,5}$/.test(name)) result = statusText.admin?.(Number(name)) || panel('狀態暫時無法取得。', [back]);
+    else if (action === 'status') result = panel(statusText(id), [[button('🔄 重新整理', 'status')], back]);
     else if (action === 'set' && validUsername(name) && kinds.includes(kind) && ['0', '1'].includes(value) && userTarget(user, name)?.generation.slice(0, 8) === generation) {
       const preference = userTarget(user, name).notifications[kind];
       if (preference.enabled !== (value === '1')) { preference.enabled = value === '1'; preference.since = now; }
@@ -158,6 +159,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
     if (ttResult && result !== ttResult) result = combinePanels(result, ttResult);
     if (xResult && hasInstagramLinks(linkedText)) result = combinePanels(result, xResult);
   }
+  if (id === settings.ownerId && (callback?.data === 'status' || (!callback && /^\/status$/.test(String(message.text || '').trim())))) result.reply_markup.inline_keyboard.splice(1, 0, [button('👑 所有監控帳號', 'admin-status:0')]);
   if (exportEnabled && id === settings.ownerId && result?.text?.startsWith('🔔 我的全域通知設定')) result.reply_markup.inline_keyboard.push([button('📦 管理員封存匯出', 'ex:platforms')]);
   const messageId = callback?.message?.message_id || inputMessageId;
   if (user.waiting && Number.isSafeInteger(messageId) && messageId > 0) user.waitingMessageId = messageId;
