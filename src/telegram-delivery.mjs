@@ -40,7 +40,11 @@ export class PersonalDelivery {
     this.persist();
   }
   persist() {
-    atomic(this.file, this.state);
+    const content = JSON.stringify(this.state);
+    if (content !== this.persistedContent || !fs.existsSync(this.file)) {
+      atomic(this.file, this.state);
+      this.persistedContent = content;
+    }
     if (!fs.existsSync(this.file + '.required')) fs.writeFileSync(this.file + '.required', 'required', { flag: 'wx', mode: 0o600 });
   }
   key(id, sub, name, kind, mediaId) { return `${id}:${sub.generation}:${name}:${kind}:${mediaId}`; }

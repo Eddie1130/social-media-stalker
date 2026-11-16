@@ -1,3 +1,4 @@
+import { createHealthWriter } from './health-writer.mjs';
 import { telegramApiBase } from './telegram-endpoint.mjs';
 import { recoverableIssue } from './error-monitor.mjs';
 import { ManualJobs } from './manual-jobs.mjs';
@@ -100,7 +101,8 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
       sessionAlerted = true;
     } catch (error) { emit('TELEGRAM_DELIVERY_FAILED', { reason: error.message }); }
   };
-  const health = () => save(path.join(dir, 'health.json'), { ...aggregateHealth(entries), sessionOk: !sessionBlocked, ...(sessionBlocked ? { failures: 3 } : {}) });
+  const publishHealth = createHealthWriter(path.join(dir, 'health.json'), { intervalMs: 30000 });
+  const health = () => publishHealth( { ...aggregateHealth(entries), sessionOk: !sessionBlocked, ...(sessionBlocked ? { failures: 3 } : {}) });
   const heartbeat = setInterval(() => {
     try { health(); } catch { emit('WATCH_FATAL', { reason: 'HEALTH_WRITE_FAILED' }); process.exit(1); }
   }, 30000);

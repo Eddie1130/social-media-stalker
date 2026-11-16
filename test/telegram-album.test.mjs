@@ -64,3 +64,19 @@ test('per-recipient multi-album retries preserve post order without blocking ano
  await delivery.drain({call:async(method,body)=>retry.push(body)});
  assert.equal(retry.length,2);assert.equal(retry[0].media[0].caption,'one caption');assert.equal(retry[1].media[0].caption,undefined);
 });
+
+test('duplicate events do not rewrite identical receipts; failed changed writes retry',t=>{
+ const f=fixture(t),event=album();f.delivery.ingest(event);
+ const before=fs.readFileSync(f.delivery.file,'utf8'),sync=fs.fsyncSync;let writes=0;
+ try{
+  fs.fsyncSync=(...args)=>{writes++;return sync(...args);};
+  f.delivery.ingest(event);
+  assert.equal(writes,0);assert.equal(fs.readFileSync(f.delivery.file,'utf8'),before);
+  f.delivery.state.summaries['100']='2026-11-16';
+  fs.fsyncSync=()=>{throw Error('DISK_FAILURE');};
+  assert.throws(()=>f.delivery.persist(),/DISK_FAILURE/);
+  fs.fsyncSync=(...args)=>{writes++;return sync(...args);};f.delivery.persist();
+  assert.equal(writes,1);
+  assert.equal(JSON.parse(fs.readFileSync(f.delivery.file,'utf8')).summaries['100'],'2026-11-16');
+ }finally{fs.fsyncSync=sync;}
+});

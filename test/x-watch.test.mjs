@@ -524,3 +524,48 @@ test('archive dispatch stops at the time budget with at most three saves in flig
   assert.equal(a.pending['post:10'],undefined,'history gets a slot before the budget expires');
   assert.equal(Object.keys(a.pending).length,7);
 });
+
+test('unchanged account-pool checks refresh health without rewriting worker history',async t=>{
+  const f=fixture(t);f.env.X_HISTORY_ENABLED='1';
+  f.watcher.child=async()=>JSON.stringify({active:3,locked:0});
+  await f.watcher.refreshPool(1000);
+  const before=fs.readFileSync(f.watcher.file,'utf8'),persist=f.watcher.persist.bind(f.watcher);let writes=0;
+  f.watcher.persist=()=>{writes++;persist();};
+  await f.watcher.refreshPool(31000);
+  assert.equal(writes,0);assert.equal(fs.readFileSync(f.watcher.file,'utf8'),before);
+  assert.equal(f.watcher.health(31000).pool.checkedAt,31000);
+  assert.equal(f.watcher.state.poolNextAt,61000);
+});
+
+test('idle X heartbeat writes are bounded while changes publish immediately',t=>{
+  const f=fixture(t),sync=fs.fsyncSync;let writes=0;
+  try{
+    fs.fsyncSync=(...args)=>{writes++;return sync(...args);};
+    for(let now=1000;now<=20000;now+=1000)f.watcher.health(now);
+    assert.equal(writes,2);
+    f.watcher.account('alice').failures=1;f.watcher.health(20001);
+    assert.equal(writes,3);
+  }finally{fs.fsyncSync=sync;}
+});
+
+test('stable pool failures stop rewriting after alert threshold and recovery persists',async t=>{
+ const f=fixture(t);f.env.X_HISTORY_ENABLED='1';f.watcher.child=async()=>{throw Error('X_POOL_INVALID');};
+ for(const now of [1000,31000,61000])await f.watcher.refreshPool(now);
+ assert.equal(f.watcher.state.poolFailures,3);assert.equal(f.watcher.state.poolWarned,true);
+ const original=f.watcher.persist.bind(f.watcher);let writes=0;f.watcher.persist=()=>{writes++;original();};
+ await f.watcher.refreshPool(91000);assert.equal(writes,0);
+ f.watcher.child=async()=>JSON.stringify({active:3,locked:0});await f.watcher.refreshPool(121000);
+ assert.equal(writes,1);const saved=JSON.parse(fs.readFileSync(f.watcher.file));
+ assert.equal(saved.poolFailures,0);assert.equal(saved.poolWarned,false);assert.equal(saved.pool.available,3);
+});
+test('pool retry decisions remain dirty after checkpoint failure and are saved on retry',async t=>{
+ const f=fixture(t);f.env.X_HISTORY_ENABLED='1';f.watcher.child=async()=>JSON.stringify({active:3,locked:0});
+ await f.watcher.refreshPool(1000);
+ const job=f.watcher.enqueueHistory({username:'alice',userId:'100',requestId:'100-1-0'},1000);
+ job.status='retry';job.reason='X_NO_ACCOUNT_AVAILABLE';job.retryAt=1000000;f.watcher.persist();
+ const original=f.watcher.persist.bind(f.watcher);f.watcher.persist=()=>{throw Error('DISK_FAILURE');};
+ await assert.rejects(f.watcher.refreshPool(31000),/DISK_FAILURE/);assert.equal(job.retryAt,31000);
+ f.watcher.persist=original;await f.watcher.refreshPool(61000);
+ assert.equal(JSON.parse(fs.readFileSync(f.watcher.file)).history[job.id].retryAt,31000);
+ assert.equal(f.watcher.poolDirty,false);
+});

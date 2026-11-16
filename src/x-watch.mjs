@@ -1,3 +1,4 @@
+import { createHealthWriter } from './health-writer.mjs';
 import { archiveLimits } from './archive-pressure.mjs';
 import { simpleXHistory } from './x-status.mjs';
 import fs from 'node:fs';
@@ -20,6 +21,11 @@ const active = status => ['queued','working','importing','retry'].includes(statu
 const safeReason = error => /^[A-Z][A-Z0-9_]{1,90}$/.test(error?.message || '') ? error.message : 'X_OPERATION_FAILED';
 const recoverable = reason => /^(X_HTTP_(404|408|429|5\d\d)|X_NETWORK_ERROR|X_MEDIA_DOWNLOAD_INCOMPLETE|X_HISTORY_PROCESS_FAILED|X_HISTORY_TIMEOUT)$/.test(reason);
 const pythonScript = name => fileURLToPath(new URL('../' + name, import.meta.url));
+const poolCheckpoint = state => JSON.stringify({
+  pool: state.pool && { active: state.pool.active, locked: state.pool.locked, available: state.pool.available,
+    nextAvailableAt: state.pool.nextAvailableAt, reason: state.pool.reason },
+  failures: state.poolFailures || 0, emptyChecks: state.poolEmptyChecks || 0, warned: !!state.poolWarned,
+});
 
 // Every mutable queue has one writer: this process. Telegram owns settings.json.
 export class XWatcher {
@@ -65,6 +71,7 @@ export class XWatcher {
     atomic(this.file,this.state);
     syncDirectory(this.dir);
     if (!fs.existsSync(this.file+'.required')) fs.writeFileSync(this.file+'.required','required',{flag:'wx',mode:0o600});
+    this.persistedPoolCheckpoint=poolCheckpoint(this.state);this.poolDirty=false;
   }
   subscriptions(name) {
     const s=this.settings();
@@ -514,10 +521,14 @@ export class XWatcher {
       targets:this.names().map(username=>{const a=this.account(username);return {username,failures:a.failures,reason:a.reason,pending:Object.keys(a.pending).length,saved:Object.keys(a.seen).length-Object.keys(a.pending).length,lastSuccess:a.lastSuccess};}),
       history:running?{username:running.username,status:running.status}:null,
       historyJobs:Object.values(this.state.history).sort((a,b)=>Number(active(b.status)||!!(b.fetchDone&&!b.reported))-Number(active(a.status)||!!(a.fetchDone&&!a.reported))||b.at-a.at).slice(0,50).map(job=>this.historyReport(job,now))};
-    atomic(path.join(this.dir,'health.json'),data);return data;
+    this.healthWriter ||= createHealthWriter(path.join(this.dir,'health.json'), {
+      select: ({at,historyJobs,...value}) => ({...value,historyJobs:historyJobs.map(({at,...job})=>job)}),
+    });
+    this.healthWriter(data,{now});return data;
   }
   async refreshPool(now) {
     if(this.stopping||this.env.X_HISTORY_ENABLED!=='1'||now<(this.state.poolNextAt||0))return;
+    let rescheduled=false;
     try {
       // Status reads use a separate handle so cancellation still targets the history job.
       const output=await this.child([pythonScript('x_history_worker.py'),'status','--accounts-db',this.env.X_ACCOUNTS_DB||'/app/x-accounts/accounts.db'],{capture:true,track:false});
@@ -526,22 +537,24 @@ export class XWatcher {
       const nextAvailableAt=Number.isFinite(pool.nextAvailableAt)&&pool.nextAvailableAt>now?pool.nextAvailableAt:null;
       this.state.pool={active:pool.active,locked:pool.locked,available:pool.active-pool.locked,nextAvailableAt,checkedAt:now};
       this.state.poolFailures=0;
-      this.state.poolEmptyChecks=pool.active?0:(this.state.poolEmptyChecks||0)+1;
+      this.state.poolEmptyChecks=pool.active?0:Math.min(3,(this.state.poolEmptyChecks||0)+1);
       for(const job of Object.values(this.state.history)) {
         if(job.status!=='retry'||job.reason!=='X_NO_ACCOUNT_AVAILABLE')continue;
-        if(this.state.pool.available>0)job.retryAt=now;
-        else if(nextAvailableAt)job.retryAt=nextAvailableAt+1000;
-        this.writeJob(job,now);
+        const retryAt=this.state.pool.available>0?Math.min(job.retryAt||now,now):nextAvailableAt?nextAvailableAt+1000:job.retryAt;
+        if(retryAt!==job.retryAt){job.retryAt=retryAt;rescheduled=true;this.writeJob(job,now);}
       }
       if(!pool.active&&this.state.poolEmptyChecks>=3&&!this.state.poolWarned){this.notice('X 歷史回補沒有可用登入帳號，請管理員在主機端更新 twscrape 帳號池。',null,'pool-empty:'+now,undefined,{noticeKey:'pool',noticeKind:'error'});this.state.poolWarned=true;}
       if(pool.active&&this.state.poolWarned){this.notice('X 歷史回補帳號池已恢復可用。',null,'pool-recovery:'+now,undefined,{noticeKey:'pool',noticeKind:'recovery'});this.state.poolWarned=false;}
     } catch(error) {
       if(this.stopping)return;
       this.state.pool={active:0,locked:0,reason:safeReason(error)};
-      this.state.poolEmptyChecks=0;this.state.poolFailures=(this.state.poolFailures||0)+1;
+      this.state.poolEmptyChecks=0;this.state.poolFailures=Math.min(3,(this.state.poolFailures||0)+1);
       if(this.state.poolFailures>=3&&!this.state.poolWarned){this.notice('X 帳號池狀態讀取失敗，請管理員檢查 accounts.db。',null,'pool-failed:'+now,undefined,{noticeKey:'pool',noticeKind:'error'});this.state.poolWarned=true;}
     }
-    this.state.poolNextAt=now+30000;this.persist();
+    this.state.poolNextAt=now+30000;
+    // Check timestamps are an in-memory cache, also published in health.json.
+    // Only meaningful pool changes and retry decisions checkpoint full history.
+    if(this.poolDirty||rescheduled||poolCheckpoint(this.state)!==this.persistedPoolCheckpoint){this.poolDirty=true;this.persist();}
   }
   async cycle(now=Date.now()) {
     this.cancelRevokedHistories();

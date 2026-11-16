@@ -1,3 +1,4 @@
+import { createHealthWriter } from './health-writer.mjs';
 import { telegramApiBase } from './telegram-endpoint.mjs';
 import { targetIssueKey } from './targets.mjs';
 import fs from 'node:fs';
@@ -9,7 +10,10 @@ import { Issues, atomic, load, safe, log, eventIssue } from './error-monitor.mjs
 const dir = process.env.IG_MONITOR_DIR || '/app/state/monitor';
 let worker, stopping = false, tick, wake = () => {};
 let health = { at: Date.now(), workerDeadline: Date.now() + 150000, phase: 'starting', lastCheckAt: null };
-const writeHealth = () => atomic(path.join(dir, 'health.json'), { ...health, at: Date.now() });
+const publishHealth = createHealthWriter(path.join(dir, 'health.json'), {
+  select: value => ({ phase: value.phase, activeIssues: value.activeIssues }),
+});
+const writeHealth = (options) => publishHealth(health, options);
 const terminate = () => { if (worker?.pid) try { process.kill(-worker.pid, 'SIGTERM'); } catch {} };
 function fatal(error) {
   clearInterval(tick); terminate();
@@ -146,7 +150,7 @@ async function main() {
           }
           health.phase = 'waiting'; health.workerDeadline = now + row.seconds * 1000 + 150000;
         }
-        health.activeIssues = issues.activeCount(); writeHealth();
+        health.activeIssues = issues.activeCount(); writeHealth({ force: !!problem });
       });
       const stderr = readline.createInterface({ input: worker.stderr });
       stderr.on('line', () => issues.fail('worker-stderr', 'WORKER_STDERR_DETECTED_SEE_LOCAL_RUNTIME'));

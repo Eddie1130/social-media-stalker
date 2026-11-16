@@ -1,3 +1,4 @@
+import { createHealthWriter } from '../src/health-writer.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -39,7 +40,7 @@ test('real supervisor clears persistent session/runtime/legacy issues after work
     });
     return worker;
   };
-  const sandbox = vm.createContext({ fs, path, readline, spawn, Issues, atomic, load, safe, eventIssue, targetIssueKey,
+  const sandbox = vm.createContext({ fs, path, readline, spawn, Issues, atomic, load, safe, eventIssue, targetIssueKey, createHealthWriter,
     log: () => {}, console: { log: () => {} }, process: processMock, setInterval, clearInterval, setTimeout });
   await vm.runInContext(source, sandbox);
   const state = load(file);
@@ -66,9 +67,32 @@ for(const attempts of [2,3])test(`real supervisor gates catalog errors after ${a
       worker.stdout.end();worker.stderr.end();processMock.emit('SIGTERM');worker.emit('close',0,null);
     });return worker;
   };
-  const sandbox=vm.createContext({fs,path,readline,spawn,Issues,atomic,load,safe,eventIssue,targetIssueKey,
+  const sandbox=vm.createContext({fs,path,readline,spawn,Issues,atomic,load,safe,eventIssue,targetIssueKey,createHealthWriter,
     log:()=>{},console:{log:()=>{}},process:processMock,setInterval,clearInterval,setTimeout});
   await vm.runInContext(source,sandbox);
   assert.equal(load(file)['target:alice:catalog-fetch:posts'].count,0);
   assert.equal(fs.existsSync(outbox)?fs.readdirSync(outbox).length:0,attempts===3?2:0);
+});
+
+test('supervisor coalesces progress bursts but publishes errors and shutdown immediately',async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ig-supervisor-health-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const monitor=path.join(dir,'monitor'),file=path.join(monitor,'health.json');let writes=0;
+  const countedAtomic=(p,value)=>{if(p===file)writes++;atomic(p,value);};
+  const healthFactory=(p,options)=>createHealthWriter(p,{...options,writer:countedAtomic});
+  const processMock=new EventEmitter();processMock.env={IG_MONITOR_DIR:monitor};processMock.kill=()=>{};processMock.exit=()=>assert.fail('must not exit fatally');
+  const source=fs.readFileSync(new URL('../src/watch-supervisor.mjs',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
+  const spawn=()=>{
+    const worker=new EventEmitter();worker.pid=123;worker.stdout=new PassThrough();worker.stderr=new PassThrough();
+    setImmediate(()=>{
+      for(let i=0;i<30;i++)worker.stdout.write(JSON.stringify({event:'CATALOG_MEDIA_SAVED',target:'101',username:'alice',key:String(i)})+'\n');
+      assert.ok(writes<=2,'ordinary progress must not write on every event');
+      const before=writes;
+      worker.stdout.write(JSON.stringify({event:'CATALOG_CHECK_FAILED',target:'101',username:'alice',scope:'posts',reason:'CATALOG_HTTP_500'})+'\n');
+      assert.equal(writes,before+1);assert.equal(load(file).lastEvent,'CATALOG_CHECK_FAILED');
+      worker.stdout.end();worker.stderr.end();processMock.emit('SIGTERM');worker.emit('close',0,null);
+    });return worker;
+  };
+  await vm.runInContext(source,vm.createContext({fs,path,readline,spawn,Issues,atomic:countedAtomic,load,safe,eventIssue,targetIssueKey,createHealthWriter:healthFactory,
+    log:()=>{},console:{log:()=>{}},process:processMock,setInterval,clearInterval,setTimeout}));
+  assert.equal(load(file).phase,'stopped');assert.ok(writes<=4);
 });
