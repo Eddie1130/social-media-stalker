@@ -1,5 +1,5 @@
 """Single browser subprocess; the SQLite owner cooperatively pumps media IO."""
-import json,os,queue,signal,subprocess,sys,threading,time,uuid
+import json,os,queue,signal,subprocess,sys,tempfile,threading,time,uuid
 from pathlib import Path
 MAX_MESSAGE=8*1024*1024
 class BrowserWorker:
@@ -8,10 +8,18 @@ class BrowserWorker:
             timeout=float(os.getenv('TIKTOK_CATALOG_QUERY_TIMEOUT_SECONDS','180'))
             if not 30<=timeout<=600:raise ValueError('TIKTOK_INVALID_QUERY_TIMEOUT')
         self.command=command or [sys.executable,'-u',str(Path(__file__).with_name('catalog_browser_worker.py'))]
+        self.scratch=None
         self.pump=pump or (lambda:None);self.timeout=timeout;self.stop=stop;self.proc=None;self.epoch=None;self.results=queue.Queue(maxsize=8);self.manual_required=False;self.pending=None
     def _start(self):
         self.epoch=uuid.uuid4().hex;self.results=queue.Queue(maxsize=8)
-        self.proc=subprocess.Popen(self.command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,start_new_session=True)
+        # The coordinator owns scratch space: a killed browser cannot run its
+        # TemporaryDirectory finalizers, so cleanup must outlive that process.
+        self.scratch=tempfile.TemporaryDirectory(prefix='tiktok-browser-worker-')
+        try:
+            self.proc=subprocess.Popen(self.command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,start_new_session=True,env={**os.environ,'TMPDIR':self.scratch.name,'TMP':self.scratch.name,'TEMP':self.scratch.name})
+        except BaseException:
+            self.scratch.cleanup();self.scratch=None
+            raise
         output=self.proc.stdout;results=self.results
         def read():
             try:
@@ -72,3 +80,5 @@ class BrowserWorker:
         finally:
             for f in (proc.stdin,proc.stdout):
                 if f:f.close()
+            if self.scratch:
+                self.scratch.cleanup();self.scratch=None

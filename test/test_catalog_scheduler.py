@@ -3,6 +3,29 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tiktok'))
 from catalog_query import BrowserWorker
 class QueryTests(unittest.TestCase):
+ def test_timeout_reclaims_cache_abandoned_by_browser_process(self):
+  command=[sys.executable,'-u','-c','import sys,json,tempfile,time,pathlib\nfor i,l in enumerate(sys.stdin):\n d=json.loads(l)\n if i:time.sleep(5)\n p=pathlib.Path(tempfile.mkdtemp(prefix="tiktok-catalog-cache-"));(p/"cache").write_bytes(b"x"*1024);print(json.dumps({"requestId":d["requestId"],"epoch":d["epoch"],"result":{"cache":str(p)}}),flush=True)']
+  w=BrowserWorker(command=command,timeout=.3)
+  cache=None
+  try:
+   cache=Path(w('alice','post')['cache']);self.assertTrue(cache.exists())
+   with self.assertRaisesRegex(RuntimeError,'TIMEOUT'):w('alice','post')
+   self.assertFalse(cache.exists(),'killed browser must not strand its cache')
+  finally:
+   w.close()
+   if cache and cache.exists():__import__('shutil').rmtree(cache)
+ def test_normal_close_reclaims_worker_scratch_and_keeps_parent_temp_files(self):
+  with tempfile.TemporaryDirectory() as parent,patch.dict('os.environ',{'TMPDIR':parent}),patch('tempfile.tempdir',parent):
+   sentinel=Path(parent)/'unrelated';sentinel.write_text('keep')
+   w=BrowserWorker(command=[sys.executable,'-u','-c','import time;time.sleep(5)'])
+   try:
+    w._start();scratch=Path(w.scratch.name);self.assertTrue(scratch.exists());self.assertEqual(scratch.parent,Path(parent))
+   finally:w.close()
+   self.assertFalse(scratch.exists());self.assertEqual(sentinel.read_text(),'keep')
+ def test_launch_failure_reclaims_scratch(self):
+  w=BrowserWorker(command=['/no-such-tiktok-browser-worker'])
+  with self.assertRaises(FileNotFoundError):w._start()
+  self.assertIsNone(w.scratch);self.assertIsNone(w.proc)
  def test_waiting_query_pumps_other_work_and_returns_only_matching_request(self):
   command=[sys.executable,'-u','-c','import sys,json,time\nfor l in sys.stdin:\n d=json.loads(l);time.sleep(.1);print(json.dumps({"requestId":d["requestId"],"epoch":d["epoch"],"result":{"ok":True}}),flush=True)']
   ticks=[];w=BrowserWorker(command=command,pump=lambda:ticks.append(1),timeout=2)
