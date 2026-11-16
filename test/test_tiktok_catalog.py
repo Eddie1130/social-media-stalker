@@ -28,6 +28,23 @@ from catalog_media import delivery_parts
 
 
 class CatalogTests(unittest.TestCase):
+    def test_archive_repairs_existing_identical_copy_without_downloading(self):
+        self.fetch.return_value = self.page()
+        self.catalog.poll("alice", "post", self.settings)
+        self.catalog.drain(self.settings)
+        record = self.records()[0]
+        folder, iid = record["folder"], record["item"]["id"]
+        source = self.catalog.root / "tiktok" / folder / "media" / f"{iid}_01.mp4"
+        target = self.catalog.root / "tiktok" / folder / "posts" / iid / "01.mp4"
+        data = target.read_bytes()
+        target.unlink()
+        target.write_bytes(data)
+        self.assertFalse(target.samefile(source))
+        self.download.reset_mock()
+        self.catalog.archive(record)
+        self.assertTrue(target.samefile(source))
+        self.download.assert_not_called()
+
     def test_drain_downloads_three_items_concurrently_and_commits_on_owner_thread(self):
         self.fetch.return_value = self.page(rows=[self.row(str(i)) for i in range(1, 7)])
         self.catalog.poll("alice", "post", self.settings)

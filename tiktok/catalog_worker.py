@@ -21,6 +21,7 @@ from catalog_metrics import record, snapshot as metrics_snapshot
 from catalog_provider import identifier, media_url
 from catalog_media import delivery_parts
 from catalog_layout import migrate_media_layout, account_media
+from archive_links import ensure_archive_link
 from worker import atomic, cookies, subscriptions, needs_attention
 
 KINDS = ("story", "post", "repost", "profile", "like")
@@ -798,8 +799,10 @@ class Catalog:
                 )) or self.download_asset(asset, shared)
             )
             local = destination / f"{index:02d}{saved.suffix}"
-            if not local.exists():
-                os.link(saved, local)
+            link_status = ensure_archive_link(self.root, saved, local)
+            if link_status in ("different", "cross_device"):
+                print(json.dumps({"event": "archive_link_conflict", "reason": link_status,
+                                  "path": str(local.relative_to(self.root))}), file=sys.stderr, flush=True)
             files.extend(
                 str(part.relative_to(self.root)) for part in delivery_parts(local,stop=STOP)
             )
