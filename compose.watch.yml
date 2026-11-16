@@ -6,6 +6,17 @@ services:
     init: true
     command: ["node", "/app/src/watch-media.mjs"]
     shm_size: "512mb"
+    # Disposable Chromium files only; authentication remains on the profile volume.
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /data/profile/Default/Cache:size=64m,mode=700
+      - /data/profile/Default/Code Cache:size=32m,mode=700
+      - /data/profile/Default/GPUCache:size=8m,mode=700
+      - /data/profile/Default/DawnGraphiteCache:size=8m,mode=700
+      - /data/profile/Default/DawnWebGPUCache:size=8m,mode=700
+      - /data/profile/ShaderCache:size=8m,mode=700
+      - /data/profile/GrShaderCache:size=8m,mode=700
+      - /data/profile/GraphiteDawnCache:size=8m,mode=700
     env_file:
       - .env.telegram
     environment:

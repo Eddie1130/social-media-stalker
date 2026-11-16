@@ -20,6 +20,9 @@ services:
     environment:
       VPN_SERVICE_PROVIDER: surfshark
       VPN_TYPE: openvpn
+    # Retain the image's probe, timeout and retries; reduce Docker metadata fsyncs.
+    healthcheck:
+      interval: 30s
     restart: unless-stopped
 
   tiktok-browser-resolver:
@@ -74,6 +77,14 @@ services:
     # Keep disposable Chromium cache and X11 sockets off slow NAS disk layers.
     tmpfs:
       - /tmp:size=256m,mode=1777
+      - /data/catalog-profile/Default/Cache:size=32m,mode=700
+      - /data/catalog-profile/Default/Code Cache:size=32m,mode=700
+      - /data/catalog-profile/Default/GPUCache:size=8m,mode=700
+      - /data/catalog-profile/Default/DawnGraphiteCache:size=8m,mode=700
+      - /data/catalog-profile/Default/DawnWebGPUCache:size=8m,mode=700
+      - /data/catalog-profile/ShaderCache:size=8m,mode=700
+      - /data/catalog-profile/GrShaderCache:size=8m,mode=700
+      - /data/catalog-profile/GraphiteDawnCache:size=8m,mode=700
     cpus: ${TIKTOK_CATALOG_CPU_LIMIT:-2.0}
     mem_limit: ${TIKTOK_CATALOG_MEMORY_LIMIT:-1536m}
     build:

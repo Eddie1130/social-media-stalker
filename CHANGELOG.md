@@ -2,6 +2,8 @@
 
 ## 2026-11-16
 
+- 提交既有 NAS I/O 調整：Chromium 暫存快取改用有上限 tmpfs，TikTok VPN Docker 健康檢查改為 30 秒，新增校正後的唯讀 I/O 量測工具及對照紀錄；4 項量測工具測試與 Python 審查通過。全部剩餘修改提交前，396 項 Node、10 項 TikTok worker 測試通過，npm audit 0 漏洞；NAS 程式與設定雜湊一致、Compose config 通過。
+
 - NAS 下載加速後短測：182.7 秒保存 124 件／33900974 bytes，對照修改前 20 分鐘 18 件／4707163 bytes；共享並行維持 3。IG／Telegram／X／TikTok catalog 皆 healthy，Telegram pending=0、X pending=[0,0,0]、TikTok pending=0／unresolved=1。樣本長度與負載不同，不宣稱固定加速倍數；詳見 docs/media-download-before-after.md。
 
 - 下載加速修正已提交並部署 NAS `9e2904d`（RED `b10dbf8`）：本機 396 項 Node 測試、NAS 隔離無網路容器 52 項相關測試全通過；npm audit 0 漏洞，兩輪程式審查通過。NAS Git 快進同步，既有修改保留，Compose config 通過，僅重啟 ig-telegram／ig-watch；X／TikTok 透過共享背壓摘要取得修正。部署前 20 分鐘保存 18 件／4707163 bytes，30 秒磁碟寫入約 3155 KiB/s、write await 約 25.6 ms；部署後實測另記比較文件。
