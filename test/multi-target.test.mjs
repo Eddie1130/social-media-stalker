@@ -383,3 +383,24 @@ test('first recoverable target runtime failure is waiting, while integrity failu
   assert.equal(h.targets[0].failures,1);assert.equal(h.targets[1].failures,0);
   process.exitCode=0;
 });
+
+test('archive backlog runs between Instagram polls without repeated discovery', async t => {
+ const f=fixture(t), started=Date.now();let now=started,fetches=0,deliveries=0,queries=0;
+ t.mock.method(Date,'now',()=>now);
+ t.mock.method(CatalogWatcher.prototype,'check',async function(){queries++;this.state.assets.one={archiveDone:false,telegramDone:true};});
+ t.mock.method(CatalogWatcher.prototype,'deliver',async function(){
+  deliveries++;
+  if(deliveries===2){this.state.assets.one.archiveDone=true;process.emit('SIGTERM');}
+  return true;
+ });
+ await main({env:{...env,IG_TARGET_USERNAMES:'alice',IG_ARCHIVE_DIR:f.root,IG_CATALOG_ENABLED:'1'},dir:f.state,args:[],resolve,
+  checkSession:async()=>{},fetcher:async(_s,_c,_t,e)=>{
+   fetches++;fs.writeFileSync(e.IG_STORY_RESULT_FILE,JSON.stringify({version:1,targetUserId:'101',storyCount:0,stories:[],skippedIds:[]}));
+   return {targetUserId:'101',storyCount:0,stories:[],guard:{blockedReadReceipt:0}};
+  },sleepImpl:async delay=>{now+=delay;}
+ });
+ assert.equal(deliveries,2);
+ assert.ok(now-started<30000,'backlog must not wait for the five-minute poll');
+ assert.equal(fetches,1,'archive-only cycles must not fetch Stories again');
+ assert.equal(queries,1,'archive-only cycles must not query catalog again');
+});

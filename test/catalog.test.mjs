@@ -214,3 +214,18 @@ test('large post splits at ten without repeating caption or mixing posts and kee
  assert.ok(retry.find(c=>c.metadata.ids[0].startsWith('post:8:')).body.media.every(m=>m.caption===undefined));assert.ok(retry.find(c=>c.metadata.ids[0].startsWith('post:9:')).body.media[0].caption);
  assert.ok(Object.values(restarted.state.assets).every(a=>a.telegramDone));
 });
+
+test('catalog dispatches more work before checkpoint timer, then durably flushes every completion', async t => {
+ let downloads=0;
+ const f=fixture(t,{downloader:async(root,base)=>{downloads++;return {relativePath:base+'.jpg',bytes:100};}});
+ const w=f.watch,plan={kind:'posts',cursor:null};
+ w.ingest(plan,wrap(normalizeResponse(body(Array.from({length:6},(_,i)=>post(String(i+1)))),plan,'99')));
+ w.state.captions={};w.persist();
+ const run=w.deliver(new AbortController().signal,async()=>{});
+ try {
+  await new Promise(resolve=>setTimeout(resolve,400));
+  assert.equal(downloads,12,'downloads must not wait one second per worker after each file');
+ } finally { await run; }
+ const restarted=new CatalogWatcher(f.args);
+ assert.equal(Object.values(restarted.state.assets).filter(a=>a.archiveDone).length,12);
+});
