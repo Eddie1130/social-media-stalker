@@ -1,3 +1,8 @@
+import {createPressurePublisher} from './archive-pressure.mjs';
+import { writeSnapshot } from './atomic-state-store.mjs';
+import { DeliveryBroker } from './telegram-delivery-broker.mjs';
+import { snapshot as performanceSnapshot, record } from './performance-metrics.mjs';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { platformStatus } from './platform-status.mjs';
 import { telegramApiBase } from './telegram-endpoint.mjs';
 import { TikTokDelivery } from './tiktok-delivery.mjs';
@@ -9,7 +14,8 @@ import { pathToFileURL } from 'node:url';
 import { atomic, load, log } from './error-monitor.mjs';
 import { settingsFile, initializeSettings, isSystemAlert, serviceUnavailableText } from './telegram-settings.mjs';
 import { eventDirectory } from './telegram-events.mjs';
-import { applyUpdate } from './telegram-menu.mjs';
+import { SettingsStore } from './telegram-state-store.mjs';
+import { applyUpdate, authorizeUpdate } from './telegram-menu.mjs';
 import { PersonalDelivery } from './telegram-delivery.mjs';
 import { TelegramClient } from './telegram-client.mjs';
 import { XDelivery } from './x-delivery.mjs';
@@ -73,38 +79,47 @@ export async function run({ env = process.env, args = process.argv } = {}) {
   for (const name of ['SIGTERM', 'SIGINT']) process.on(name, stop);
   const wait = ms => new Promise(resolve => { const t = setTimeout(done, ms); function done() { clearTimeout(t); signal.signal.removeEventListener('abort', done); resolve(); } signal.signal.addEventListener('abort', done, { once: true }); if (stopping) done(); });
   const client = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN, baseUrl: telegramApiBase(env), dir, signal: signal.signal, sleep: wait });
-  const delivery = new PersonalDelivery({ dir, stateDir, settings: () => settings, log });
-  const manual = new ManualDelivery({ root: env.IG_ARCHIVE_DIR || '/downloads', dir, stateDir, settings: () => settings, log });
-  const xDelivery = env.X_ENABLED === '0' ? null : new XDelivery({ root: env.IG_ARCHIVE_DIR || '/downloads', dir, stateDir, settings: () => settings, log });
-  const ttDelivery = new TikTokDelivery({ root: env.IG_ARCHIVE_DIR || "/downloads", dir, stateDir, settings: () => settings, log });
+  const isolated=!args.includes('--once');
+  const delivery = isolated ? {state:{pending:{}},persist(){}} : new PersonalDelivery({ dir, stateDir, settings: () => settings, log });
+  const manual = isolated ? null : new ManualDelivery({ root: env.IG_ARCHIVE_DIR || '/downloads', dir, stateDir, settings: () => settings, log });
+  const xDelivery = isolated || env.X_ENABLED === '0' ? null : new XDelivery({ root: env.IG_ARCHIVE_DIR || '/downloads', dir, stateDir, settings: () => settings, log });
+  const ttDelivery = isolated ? null : new TikTokDelivery({ root: env.IG_ARCHIVE_DIR || "/downloads", dir, stateDir, settings: () => settings, log });
   const ttOk = { video: true, notice: true, content: true, story: true };
-  const persistSettings = () => atomic(settingsFile(env), settings);
+  const store=new SettingsStore({file:settingsFile(env),initial:settings});
+  const earlyAcknowledged=new Map();
+  let broker;
+  const transact=async mutate=>{const started=performance.now(),previous=JSON.stringify(settings);settings=await store.transact(mutate);if(JSON.stringify(settings)!==previous)broker?.update(settings);record('settings_commit',performance.now()-started);};
+  const persistSettings = async () => {const snapshot=structuredClone(settings);await transact(()=>snapshot);};
   const describe = id => describeUser(settings, id, stateDir, env.IG_WATCHDOG_DIR || '/app/watchdog-state');
   describe.platform = (id, platform) => platformStatus(settings.users[id], platform, stateDir, (file, fallback) => {
     try { return load(file, fallback); } catch { return fallback; }
   }, Date.now(), { settings, id });
-  refreshQueuedDescriptions(delivery, settings, describe);
-  delivery.persist(); persistSettings();
-  const health = () => atomic(path.join(dir, 'health.json'), { at: Date.now(), telegramOk: telegramOk && xTelegramOk && ttOk.video && ttOk.notice && ttOk.content && ttOk.story, pollOk, lastPollAt, pending: Object.keys(delivery.state.pending).length });
-  const heartbeat = setInterval(health, 15000);
+  if(!isolated)refreshQueuedDescriptions(delivery, settings, describe);
+  delivery.persist(); await persistSettings();
+  const loopDelay=monitorEventLoopDelay({resolution:20});loopDelay.enable();
+  let healthWriting=false;
+  const health = async () => {if(healthWriting)return;healthWriting=true;try{record('event_loop',Math.max(0,loopDelay.percentile(95)/1e6));loopDelay.reset();await writeSnapshot(path.join(dir, 'health.json'), { performance:performanceSnapshot(),at: Date.now(), telegramOk: isolated ? broker?.health.telegramOk===true : telegramOk && xTelegramOk && ttOk.video && ttOk.notice && ttOk.content && ttOk.story, pollOk, lastPollAt, pending: isolated ? broker?.health.pending||0 : Object.keys(delivery.state.pending).length,deliveryReady:isolated?broker?.health.ready===true:true });}finally{healthWriting=false;}};
+  const pressurePublisher=createPressurePublisher({stateDir,enabled:env.ARCHIVE_PRESSURE_ENABLED==='1',controlMetrics:performanceSnapshot,readServiceMetrics:()=>[broker?.health.performance],interactiveAge:()=>Math.max(0,...Object.values(settings.replies).filter(r=>Number.isFinite(r.at)&&Date.now()>=(r.retryAt||0)).map(r=>Date.now()-r.at))});
+  const heartbeat = setInterval(()=>{void health().catch(()=>log('TELEGRAM_HEALTH_WRITE_FAILED',{reason:'CONTROL_STATE_OR_IO_ERROR'}));},15000);
   try {
     // Do not silently delete another deployment's webhook or pending updates.
     const webhook = await client.call('getWebhookInfo', {}, { polling: true });
     if (webhook?.url) throw Error('TELEGRAM_WEBHOOK_CONFIGURED');
     await client.call('setMyCommands', { commands: [{ command: 'menu', description: '開啟 Instagram／X／TikTok 選單' }, { command: 'status', description: '查看我的監看狀態' }, { command: 'add', description: '新增 IG 帳號，例如 /add alice' }, { command: 'ttadd', description: '新增 TikTok 帳號，例如 /ttadd alice' }, { command: 'xadd', description: '新增 X 帳號，例如 /xadd alice' }, { command: 'xhistory', description: '歷史回補，例如 /xhistory alice' }, { command: 'cancel', description: '取消目前操作' }] });
     await client.call('setChatMenuButton', { menu_button: { type: 'commands' } });
-    health(); log('TELEGRAM_CONTROL_STARTED');
+    if(isolated)broker=new DeliveryBroker({client,settings:()=>settings,env,log});
+    await health(); log('TELEGRAM_CONTROL_STARTED');
     async function poll() {
       do {
         try {
           const updates = await client.call('getUpdates', { offset: settings.offset, timeout: args.includes('--once') ? 0 : 10, allowed_updates: ['message', 'callback_query'], limit: 50 }, { polling: true });
           if (!Array.isArray(updates)) throw Error('TELEGRAM_UPDATES_INVALID');
           for (const update of updates) {
-            const candidate = structuredClone(settings);
-            if (applyUpdate(candidate, update, Date.now(), describe, env.ARCHIVE_EXPORT_ENABLED === '1' && exportServiceReady(env.EXPORT_DIR || '/exports'),
-              platform => exportAccountNames(candidate, platform, { root: env.IG_ARCHIVE_DIR || '/downloads', stateDir }))) {
-              atomic(settingsFile(env), candidate); settings = candidate;
+            if(update.callback_query&&authorizeUpdate(settings,update)&&earlyAcknowledged.size<1000){
+              earlyAcknowledged.set(`ack:${update.update_id}`,client.call('answerCallbackQuery',{callback_query_id:update.callback_query.id},{priority:true}).then(()=>true,()=>false));
             }
+            await transact(candidate=>{applyUpdate(candidate, update, Date.now(), describe, env.ARCHIVE_EXPORT_ENABLED === '1' && exportServiceReady(env.EXPORT_DIR || '/exports'),
+              platform => exportAccountNames(candidate, platform, { root: env.IG_ARCHIVE_DIR || '/downloads', stateDir }));});
           }
           lastPollAt = Date.now(); pollOk = true;
         } catch (error) {
@@ -118,13 +133,10 @@ export async function run({ env = process.env, args = process.argv } = {}) {
     async function replyDispatch() {
       do {
         if (env.ARCHIVE_EXPORT_ENABLED === '1') {
-          const candidate = structuredClone(settings);
-          let imported = false;
-          try { imported = ingestExportReports(candidate, env.EXPORT_DIR || '/exports'); }
-          catch { log('ARCHIVE_EXPORT_REPORT_FAILED', { reason: 'EXPORT_STATE_OR_IO_ERROR' }); }
-          if (imported) { atomic(settingsFile(env), candidate); settings = candidate; }
+          try {await transact(candidate=>{ingestExportReports(candidate,env.EXPORT_DIR||'/exports');});}
+          catch {log('ARCHIVE_EXPORT_REPORT_FAILED',{reason:'EXPORT_STATE_OR_IO_ERROR'});}
         }
-        await flushReplies(() => settings, client, persistSettings, { stopping: () => stopping, log });
+        await flushReplies(() => settings, client, persistSettings, { stopping: () => stopping, log,transaction:transact,earlyAcknowledged });
         if (!args.includes('--once')) await wait(250);
       } while (!stopping && !args.includes('--once'));
     }
@@ -159,11 +171,12 @@ export async function run({ env = process.env, args = process.argv } = {}) {
       } while (!stopping && !args.includes("--once"));
     }
     if (args.includes('--once')) await poll();
-    await Promise.all([...(args.includes('--once') ? [] : [poll()]), replyDispatch(), dispatch(), manualDispatch(), xDispatch(), tikTokDispatch('notice'), tikTokDispatch('video'), tikTokDispatch('content'), tikTokDispatch('story')]);
-    if (args.includes('--once')) health();
+    await Promise.all(isolated?[poll(),replyDispatch()]:[replyDispatch(),dispatch(),manualDispatch(),xDispatch(),tikTokDispatch('notice'),tikTokDispatch('video'),tikTokDispatch('content'),tikTokDispatch('story')]);
+    if (args.includes('--once')) await health();
     if (args.includes('--once')) process.exitCode = pollOk && telegramOk && xTelegramOk && ttOk.video && ttOk.notice && ttOk.content && ttOk.story ? 0 : 1;
   } finally {
-    stopping = true; signal.abort(); clearInterval(heartbeat);
+    stopping = true; signal.abort(); clearInterval(heartbeat);loopDelay.disable();pressurePublisher.close();
+    await broker?.stop();
     for (const name of ['SIGTERM', 'SIGINT']) process.off(name, stop);
   }
 }

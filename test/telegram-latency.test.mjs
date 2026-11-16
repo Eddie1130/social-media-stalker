@@ -145,3 +145,10 @@ test('queued priority reply still respects a newly received Telegram flood wait'
   await rejected;
   assert.equal(requests, 1);
 });
+
+test('slow pre-send checkpoint cannot bunch actual HTTP starts in one chat',async t=>{
+ const dir=fixture(t);let now=1000;const starts=[];t.mock.method(Date,'now',()=>now);
+ const client=new TelegramClient({token:'1:abc',dir,sleep:async ms=>{now+=ms;},fetchImpl:async()=>{starts.push(now);return {ok:true,json:async()=>({ok:true,result:true})};}});
+ await Promise.all([client.call('sendVideo',{chat_id:'100'},{beforeRequest:()=>{now+=2000;}}),client.call('sendMessage',{chat_id:'100'})]);
+ assert.ok(starts[1]-starts[0]>=1100,JSON.stringify(starts));
+});

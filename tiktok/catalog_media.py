@@ -1,9 +1,20 @@
 """Produce bounded upload copies without changing the archived original."""
 
 import subprocess
+import os,signal,threading,time
 
 
-def delivery_parts(file, limit=1_900_000_000):
+_split_slot=threading.Semaphore(1)
+def delivery_parts(file,limit=1_900_000_000,stop=None):
+    if file.suffix != ".mp4" or file.stat().st_size<=limit:return [file]
+    while not _split_slot.acquire(timeout=.1):
+        if stop and stop.is_set():raise RuntimeError("TIKTOK_SPLIT_INTERRUPTED")
+    try:
+        if stop and stop.is_set():raise RuntimeError("TIKTOK_SPLIT_INTERRUPTED")
+        return _delivery_parts(file,limit,stop)
+    finally:_split_slot.release()
+
+def _delivery_parts(file, limit, stop=None):
     if file.suffix != ".mp4" or file.stat().st_size <= limit:
         return [file]
     duration = float(
@@ -28,7 +39,7 @@ def delivery_parts(file, limit=1_900_000_000):
     while True:
         for part in folder.glob("*.mp4"):
             part.unlink()
-        subprocess.run(
+        proc=subprocess.Popen(
             [
                 "ffmpeg",
                 "-nostdin",
@@ -49,11 +60,26 @@ def delivery_parts(file, limit=1_900_000_000):
                 "1",
                 str(folder / "%04d.mp4"),
             ],
-            check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=1800,
+            start_new_session=True,
         )
+        deadline=time.monotonic()+1800
+        try:
+            while proc.poll() is None:
+                if (stop and stop.is_set()) or time.monotonic()>deadline:
+                    raise RuntimeError("TIKTOK_SPLIT_INTERRUPTED")
+                time.sleep(.1)
+            if proc.returncode:raise subprocess.CalledProcessError(proc.returncode,proc.args)
+        finally:
+            if proc.poll() is None:
+                try:os.killpg(proc.pid,signal.SIGTERM)
+                except ProcessLookupError:pass
+                try:proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:os.killpg(proc.pid,signal.SIGKILL)
+                    except ProcessLookupError:pass
+                    proc.wait()
         parts = sorted(folder.glob("*.mp4"))
         if parts and all(12 <= p.stat().st_size <= limit for p in parts):
             return parts

@@ -59,7 +59,7 @@ class RegularBrowserTransport(BrowserTransport):
             env={**os.environ, "DISPLAY": ":98"},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=os.getenv("TIKTOK_BROWSER_CHILD_PROCESS") != "1",
         )
         self.wait_for_cdp()
         self.remote = self.engine.chromium.connect_over_cdp(
@@ -154,12 +154,18 @@ class RegularBrowserTransport(BrowserTransport):
                 self.engine.stop()
         if self.chrome and self.chrome.poll() is None:
             with suppress(ProcessLookupError):
-                os.killpg(self.chrome.pid, signal.SIGTERM)
+                if os.getenv("TIKTOK_BROWSER_CHILD_PROCESS") == "1":
+                    self.chrome.terminate()
+                else:
+                    os.killpg(self.chrome.pid, signal.SIGTERM)
             try:
                 self.chrome.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 with suppress(ProcessLookupError):
-                    os.killpg(self.chrome.pid, signal.SIGKILL)
+                    if os.getenv("TIKTOK_BROWSER_CHILD_PROCESS") == "1":
+                        self.chrome.kill()
+                    else:
+                        os.killpg(self.chrome.pid, signal.SIGKILL)
                 self.chrome.wait()
         if self.display and self.display.poll() is None:
             self.display.terminate()

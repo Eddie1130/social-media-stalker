@@ -38,6 +38,13 @@ function accountMenu(user, name) {
 }
 function listMenu(user, page = 0, overview) { return platformMenu(user, 'ig', page, overview); }
 
+export function authorizeUpdate(settings,update) {
+  const message=update?.callback_query?.message||update?.message;
+  const from=update?.callback_query?.from||message?.from;
+  const id=String(from?.id||'');
+  return Number.isSafeInteger(update?.update_id)&&update.update_id>=settings.offset&&!from?.is_bot&&message?.chat?.type==='private'&&String(message.chat.id)===id&&settings.allowedIds.includes(id)&&settings.users[id]?id:null;
+}
+
 // Mutate settings and enqueue replies in one durable transaction with the update offset.
 // Desired values and subscription generations make repeated/stale buttons harmless.
 export function applyUpdate(settings, update, now = Date.now(), statusText = () => '狀態暫時無法取得。', exportEnabled = false, exportAccounts) {

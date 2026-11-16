@@ -233,8 +233,15 @@ def fetch_page(request, transport=None):
         response = (
             transport.request(url) if transport else original(url, *args, **kwargs)
         )
+        if response.status_code == 429:
+            error=ProviderError("TIKTOK_RATE_LIMITED")
+            try:error.retry_after=max(1,min(604800,int(float(getattr(response,"headers",{}).get("Retry-After") or 60))))
+            except (ValueError,TypeError):error.retry_after=60
+            raise error
         if response.status_code != 200:
             raise ProviderError("TIKTOK_HTTP_REJECTED")
+        if not response.text.strip():
+            raise ProviderError("TIKTOK_EMPTY_RESPONSE")
         return response
 
     ex.request = readonly

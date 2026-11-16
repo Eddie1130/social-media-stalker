@@ -40,8 +40,12 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
     if (platform === 'tt') {
       const states = Object.values(target || {});
       pending += states.reduce((sum, state) => sum + amount(state?.pending), 0);
-      const failed = states.some(s => s && (s.reason || /error|fail|retry|異常|重試/.test(s.phase || '')));
+      const failed = states.some(s => s && (s.reason || s.failures>=3 || /error|fail|異常/.test(s.phase || '')));
+      const transient=states.some(s=>(s?.consecutiveFailures||0)>0);
+      const ages={story:180000,post:420000,repost:420000,profile:2100000,like:720000};
+      const stale=Object.entries(target||{}).some(([kind,s])=>sub.notifications?.[kind]?.enabled&&Number.isFinite(s.lastSuccess)&&s.lastSuccess>0&&now-s.lastSuccess>(ages[kind]||420000));
       if (fresh(health) && target) { state = failed ? '內容異常／重試中' : '內容正常'; icon = failed ? '🔴' : '🟢'; }
+      if(fresh(health)&&target&&!failed&&(transient||stale)){state=transient?'內容暫時失敗／等待重試':'內容更新較慢';icon='🟡';}
       const livePhase = live?.targets?.[name]?.phase;
       state += ` · LIVE ${fresh(live) ? phases[livePhase] || (/^(未開播|錄影中|檢查直播中|監看中|已停止監控|等待重試（\d+\/3）|檢查／錄影異常，重試中)$/.test(livePhase || '') ? livePhase : '等待檢查') : '狀態未更新'}`;
       if (/異常/.test(livePhase || '')) icon = '🔴';

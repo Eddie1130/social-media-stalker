@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import random
 from pathlib import Path
 import signal
 import sqlite3
@@ -15,6 +16,8 @@ import threading
 import time
 import traceback
 
+from catalog_errors import classify_failure
+from catalog_metrics import record, snapshot as metrics_snapshot
 from catalog_provider import identifier, media_url
 from catalog_media import delivery_parts
 from catalog_layout import migrate_media_layout, account_media
@@ -93,6 +96,34 @@ class SessionProvider:
             raise ValueError("TIKTOK_INVALID_BROWSER_MAX_AGE")
 
     def __call__(self, name, kind, cursor="0", item_id=None):
+        started = time.perf_counter()
+        try:
+            for attempt in range(2):
+                try:
+                    return self._query(name, kind, cursor, item_id)
+                except Exception as error:
+                    failure = classify_failure(error)
+                    if failure.category == "transport":
+                        self.recover(failure)
+                        raise
+                    if attempt or not failure.retryable or STOP.is_set():
+                        raise
+                    if failure.category == "empty_response":
+                        time.sleep(random.uniform(1, 3))
+        finally:
+            record("browser_query", (time.perf_counter()-started)*1000, {"platform":"tt","kind":kind})
+
+    def recover(self, failure=None):
+        try:
+            self.close()
+        except Exception:
+            # The browser subprocess owner will reap the entire process group.
+            pass
+        finally:
+            self.browser = self.name = self.opened_at = None
+        record("browser_restart", 1, {"platform":"tt"})
+
+    def _query(self, name, kind, cursor="0", item_id=None):
         if os.getenv("TIKTOK_CATALOG_BROWSER", "1") != "1":
             return provider(name, kind, cursor, item_id)
         if self.manual_required:
@@ -163,14 +194,15 @@ class SessionProvider:
             try:
                 self.browser.park()
             except Exception:
-                self.close()
-                raise RuntimeError("TIKTOK_BROWSER_TRANSPORT_FAILED") from None
+                self.recover()
 
     def close(self):
-        if self.browser:
-            self.browser.close()
+        try:
+            if self.browser:
+                self.browser.close()
+        finally:
             self.browser = None
-        self.name = self.opened_at = None
+            self.name = self.opened_at = None
 
 
 def safe_file(root, relative):
@@ -258,6 +290,8 @@ def download(url, file, kind, session=None, headers=None):
             raise RuntimeError("TIKTOK_MEDIA_SIGNATURE_INVALID")
         destination = file.with_suffix("." + ext)
         part.replace(destination)
+        record("media_download",(time.monotonic()-started)*1000,{"platform":"tt","outcome":"ok"})
+        record("media_bytes",count,{"platform":"tt"})
         return destination
     finally:
         response.close()
@@ -307,9 +341,13 @@ class Catalog:
         migrate_media_layout(self.root, self.db, self.folder)
 
     def read_settings(self):
-        value = json.loads((self.control / "settings.json").read_text())
+        file=self.control / "settings.json"
+        stat=file.stat();key=(stat.st_ino,stat.st_mtime_ns,stat.st_size)
+        if getattr(self,"_settings_key",None)==key:return self._settings_cache
+        value = json.loads(file.read_text())
         if value.get("version") != 1:
             raise RuntimeError("TIKTOK_SETTINGS_INVALID")
+        self._settings_key=key;self._settings_cache=value
         return value
 
     def target_recipients(self, settings, name, kind=None):
@@ -595,6 +633,7 @@ class Catalog:
             self.save_stream(name, kind, state)
             self.db.commit()
         except Exception as error:
+            if STOP.is_set():return
             self.db.rollback()
             network_error = re.search(r"\bnet::(ERR_[A-Z_]+)\b", str(error))
             # Trace locations identify integration failures without logging private
@@ -622,6 +661,8 @@ class Catalog:
             abnormal = state.get("alerted") or state["failures"] >= 3 or needs_attention(error)
             state["phase"] = "異常／重試中" if abnormal else f"等待重試（{state['failures']}/3）"
             state["nextAt"] = now + min(3600000, 30000 * 2 ** min(state["failures"], 6))
+            retry_after=getattr(error,"retry_after",0)
+            if isinstance(retry_after,(int,float)) and 0<retry_after<=604800:state["nextAt"]=max(state["nextAt"],now+retry_after*1000)
             self.save_stream(name, kind, state)
             if abnormal and (not state.get("alerted") or needs_attention(error) and state["reason"] != previous_reason):
                 self.notice(
@@ -760,7 +801,7 @@ class Catalog:
             if not local.exists():
                 os.link(saved, local)
             files.extend(
-                str(part.relative_to(self.root)) for part in delivery_parts(local)
+                str(part.relative_to(self.root)) for part in delivery_parts(local,stop=STOP)
             )
         metadata = {k: v for k, v in item.items() if k != "assets"}
         metadata.update(
@@ -825,6 +866,7 @@ class Catalog:
                             if refreshed["id"] != iid:
                                 raise RuntimeError("TIKTOK_ITEM_IDENTITY_INVALID")
                             record["item"]["assets"] = refreshed["assets"]
+                            self.db.execute("UPDATE items SET data=? WHERE target=? AND kind=? AND id=?",(json.dumps(record),target,kind,iid));self.db.commit()
                         folder = str(Path("manual") / record["folder"]) if record.get("manual") else record["folder"]
                         reusable = [
                             account_media(self.root, self.db, folder, record["item"]["id"], i)
@@ -851,9 +893,26 @@ class Catalog:
                     candidates.clear()
 
     def finish_archive(self, job, future, settings):
-        target, kind, iid, record = job
+        target, kind, iid, started_record = job
+        row=self.db.execute("SELECT data FROM items WHERE target=? AND kind=? AND id=?",(target,kind,iid)).fetchone()
+        if not row:return
+        record=json.loads(row[0])
+        if record.get("status")!="pending":return
         try:
             files = future.result()
+            if len(record["item"]["assets"])!=len(started_record["item"]["assets"]):
+                return  # Original durable pending job will reconcile additional media.
+            if record["item"].get("caption")!=started_record["item"].get("caption"):
+                folder=("manual/" if record.get("manual") else "")+record["folder"]
+                category={"post":"posts","repost":"reposts","story":"stories","profile":"profile","like":"likes"}[kind]
+                destination=safe_file(self.root,Path("tiktok")/folder/category/iid)
+                metadata={k:v for k,v in record["item"].items() if k!="assets"}
+                metadata.update(kind=kind,target=target,observedAt=record["at"],files=files)
+                atomic(destination/"metadata.json",metadata)
+                temp=destination/"caption.txt.tmp"
+                with temp.open("w") as out:
+                    out.write(record["item"].get("caption", ""));out.flush();os.fsync(out.fileno())
+                temp.replace(destination/"caption.txt")
             self.queue_event(record, files)
             for extra in record.get("extraRecipients", []):
                 self.queue_event({**record, **extra}, files)
@@ -866,6 +925,7 @@ class Catalog:
                 )
             record.update(status="ready", files=files, reason=None, failures=0, archiveAlerted=False)
         except Exception as error:
+            record.pop("downloadRefreshed", None)
             record["failures"] += 1
             record["reason"] = "TIKTOK_ARCHIVE_FAILED"
             record["retryAt"] = self.clock() + min(
@@ -895,6 +955,10 @@ class Catalog:
             self.db.commit()
 
     def health(self):
+        if getattr(self,"coordinator",None):
+            current=time.monotonic()
+            if current-getattr(self,"_last_health_scan",0)<15:return
+            self._last_health_scan=current
         targets = {}
         for name, kind, data in self.db.execute("SELECT name,kind,data FROM streams"):
             if self.active_names is not None and name not in self.active_names:
@@ -906,6 +970,9 @@ class Catalog:
             }
             report = targets[name][kind]
             report["consecutiveFailures"] = stream["failures"]
+            report["queryAgeMs"] = max(0,self.clock()-stream["lastSuccess"]) if stream.get("lastSuccess") else None
+            report["dueLagMs"] = max(0,self.clock()-stream.get("nextAt",0))
+            report["backoffUntil"] = stream.get("nextAt") if stream["failures"] else None
             if not stream.get("alerted") and stream["failures"] < 3:
                 report["failures"] = 0
                 report["reason"] = None
@@ -940,11 +1007,11 @@ class Catalog:
             "manualRequired": getattr(self.fetcher, "manual_required", False) is True,
             "phase": "running",
         }
-        self.heartbeat()
+        if not getattr(self,"coordinator",None):self.heartbeat()
 
     def heartbeat(self):
         atomic(
-            self.folder / "health.json", {**self.health_snapshot, "at": self.clock()}
+            self.folder / "health.json", {**self.health_snapshot, "at": self.clock(), "performance": metrics_snapshot()}
         )
 
     def manual_requests(self, settings):
@@ -988,7 +1055,7 @@ class Catalog:
                 if item["id"] != iid:
                     raise ValueError("TIKTOK_ITEM_IDENTITY_INVALID")
                 record = {"item": item, "folder": name, "kind": "post", "target": item["authorId"], "at": request["at"], "manual": True}
-                event.update(username=name, kind="post", manual=True, files=self.archive(record), text=f"TikTok @{name}\n{item.get('caption', '')}\n{url}", mediaCaption=f"@{name}\n{url}\n{item.get('caption', '')}"[:900])
+                event.update(username=name, kind="post", manual=True, files=(self.coordinator.archive_manual(record,self.read_settings()) if getattr(self,"coordinator",None) else self.archive(record)), text=f"TikTok @{name}\n{item.get('caption', '')}\n{url}", mediaCaption=f"@{name}\n{url}\n{item.get('caption', '')}"[:900])
                 done = 1
             except Exception:
                 attempts += 1
@@ -1004,6 +1071,17 @@ class Catalog:
         settings = self.read_settings()
         self.active_names = set(subscriptions(settings))
         if os.getenv("IG_TELEGRAM_CONTROL", "1") == "1":
+            if getattr(self,"coordinator",None):
+                from catalog_scheduler import select_stream
+                self.coordinator.pump(settings)
+                self.manual_requests(settings)
+                selected=select_stream(self,settings,self.clock())
+                if selected:self.poll(*selected,settings)
+                self.coordinator.refresh_one(settings)
+                self.repair(settings)
+                self.coordinator.pump(settings)
+                self.flush();self.health()
+                return
             self.manual_requests(settings)
             for name in subscriptions(settings):
                 for kind in KINDS:
@@ -1021,13 +1099,18 @@ def main():
     logging.disable(logging.CRITICAL)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: STOP.set())
-    session = SessionProvider()
+    from catalog_query import BrowserWorker
+    from catalog_scheduler import ArchiveCoordinator
+    session = BrowserWorker(stop=STOP)
     catalog = Catalog(
         os.getenv("IG_ARCHIVE_DIR", "/downloads"),
         os.getenv("IG_STATE_DIR", "/app/state"),
         os.getenv("IG_CONTROL_DIR", "/app/control"),
         fetcher=session,
     )
+
+    catalog.coordinator = ArchiveCoordinator(catalog, STOP)
+    session.pump = lambda: catalog.coordinator.pump(catalog.read_settings())
 
     def beat():
         while not STOP.wait(15):
@@ -1037,18 +1120,20 @@ def main():
                 STOP.set()
 
     heartbeat = threading.Thread(target=beat, daemon=True)
+    catalog.health()
     catalog.heartbeat()
     heartbeat.start()
     try:
         while not STOP.is_set():
             catalog.tick()
             session.idle()
-            STOP.wait(5)
+            STOP.wait(.25)
     finally:
         STOP.set()
         heartbeat.join(timeout=2)
         try:
             session.close()
+            catalog.coordinator.close(catalog.read_settings())
         finally:
             catalog.db.close()
             atomic(catalog.folder / "health.json", {"at": now_ms(), "phase": "stopped"})

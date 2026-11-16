@@ -1,3 +1,4 @@
+import { archiveLimits } from './archive-pressure.mjs';
 import { simpleXHistory } from './x-status.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -288,7 +289,7 @@ export class XWatcher {
       }
     };
     // Drain every in-flight save before committing or reclaiming payloads.
-    const results=await Promise.allSettled(Array.from({length:3},()=>work()));
+    const results=await Promise.allSettled(Array.from({length:archiveLimits().downloadConcurrency},()=>work()));
     const rejected=results.find(result=>result.status==='rejected');
     if(rejected)throw rejected.reason;
     } finally {

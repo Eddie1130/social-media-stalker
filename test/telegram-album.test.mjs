@@ -56,7 +56,7 @@ test('per-recipient multi-album retries preserve post order without blocking ano
  for(const m of second.body.media)delete m.caption;
  f.delivery.ingest(second);f.delivery.ingest(first);
  const other={...album(),id:'post:8:album:81-82',ids:['post:8:81','post:8:82'],postId:'8',postOrder:1};f.delivery.ingest(other);
- const calls=[];await f.delivery.drain({call:async(method,body)=>{calls.push(body);if(calls.length===1)throw Error('TELEGRAM_ERROR_500');}});
+ const calls=[];await f.delivery.drain({call:async(method,body)=>{calls.push(body);if(calls.length===1)throw Error('TELEGRAM_ERROR_429');}});
  assert.equal(calls.length,2);assert.equal(calls[0].media[0].caption,'one caption');
  const delivery=new PersonalDelivery(f.args),retry=[];
  await delivery.drain({call:async()=>assert.fail('later chunk must wait for retry')});

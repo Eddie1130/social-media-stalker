@@ -1,3 +1,4 @@
+import { archiveLimits } from './archive-pressure.mjs';
 import { archiveBatch } from './archive-batch.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -169,7 +170,7 @@ export class StoryArchive {
       this.state.saved[story.id] = { ...result, at: Date.now() };
       delete this.state.pending[story.id]; this.persist();
       this.log('STORY_ARCHIVE_SAVED', { id: story.id, ...result });
-    }, { limit, budgetMs, shouldYield, signal });
+    }, { limit, budgetMs, shouldYield, signal, concurrency:archiveLimits().downloadConcurrency });
     this.log('WATCH_ARCHIVE_STATUS', { pendingCount: Object.keys(this.state.pending).length, failedCount: Object.keys(this.state.failed).length, savedCount: Object.keys(this.state.saved).length });
     return ok && Object.keys(this.state.pending).length === 0 && Object.keys(this.state.failed).length === 0;
   }
