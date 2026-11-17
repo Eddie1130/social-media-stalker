@@ -128,10 +128,11 @@ export function simpleXHistory(value, now = Date.now()) {
     const updated = job.progressUpdatedAt;
     if (validTimestamp(start) && initial !== null && archive.done > initial && archive.done < archive.total && !archive.failed &&
         validTimestamp(updated) && updated <= now && now - updated <= 300000 && updated > start && job.status !== 'retry') {
-      eta = now + (updated - start) / (archive.done - initial) * (archive.total - archive.done);
+      // Anchor to the measured progress, so viewing unchanged progress cannot move the prediction.
+      eta = updated + (updated - start) / (archive.done - initial) * (archive.total - archive.done);
     }
   }
   if (validTimestamp(job.progressUpdatedAt) && now - job.progressUpdatedAt > 300000) detail += ' · 狀態未更新';
-  const estimate = validTimestamp(eta) ? `約 ${hongKongTime.format(new Date(eta))}（香港時間）` : '暫時無法估算';
+  const estimate = validTimestamp(eta) && eta > now ? `約 ${hongKongTime.format(new Date(eta))}（香港時間）` : '暫時無法估算';
   return `處理中：@${username(job.username)}\n進度：${detail}\n預計完成：${estimate}`;
 }

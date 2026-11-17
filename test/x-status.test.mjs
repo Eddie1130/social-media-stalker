@@ -3,11 +3,32 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { formatXHistory, compactXHistory } from '../src/x-status.mjs';
+import { formatXHistory, compactXHistory, simpleXHistory } from '../src/x-status.mjs';
 import { describeUser } from '../src/telegram-control.mjs';
 import { atomic } from '../src/error-monitor.mjs';
 
 const now = Date.parse('2026-11-13T10:00:00Z');
+const archiveJob = () => ({ username: 'alice', status: 'complete', phase: 'archive',
+  archiveStartedAt: now - 600000, archiveStartedDone: 0, progressUpdatedAt: now,
+  archive: { unit: 'post', done: 50, total: 100, failed: 0 } });
+
+test('archive ETA stays fixed between progress updates and changes with new progress', () => {
+  const record = archiveJob();
+  assert.match(simpleXHistory(record, now), /2026\/11\/13 18:10:00/);
+  assert.equal(simpleXHistory(record, now + 60000), simpleXHistory(record, now));
+  const advanced = { ...record, progressUpdatedAt: now + 60000, archive: { ...record.archive, done: 75 } };
+  assert.match(simpleXHistory(advanced, now + 60000), /2026\/11\/13 18:04:40/);
+});
+
+test('archive ETA becomes unavailable for stale progress or an elapsed prediction', () => {
+  const record = archiveJob();
+  assert.match(simpleXHistory(record, now + 300001), /狀態未更新/);
+  assert.match(simpleXHistory(record, now + 300001), /預計完成：暫時無法估算/);
+  const nearlyDone = { ...record, archive: { ...record.archive, done: 99 } };
+  assert.match(simpleXHistory(nearlyDone, now), /預計完成：約/);
+  assert.match(simpleXHistory(nearlyDone, now + 10000), /預計完成：暫時無法估算/);
+});
+
 const job = extra => ({ username: 'alice', status: 'working', phase: 'search', posts: 120, start: '2020-01-01', end: '2026-11-14',
   progressUpdatedAt: now, progress: { completedWindows: 4, totalWindows: 10, remainingWindows: 6, partialWindows: 0, failedWindows: 0,
     currentPass: 'search_replies', windowStart: '2023-01-01', windowEnd: '2023-01-08', passes: [
