@@ -2,9 +2,19 @@
 
 ## 2026-11-17
 
+- 更新 todo.md：保留 viewer／追蹤關係監控需求，新增 TikTok／X 安全錯誤診斷、Docker 歷史事件、跨平台進度與資源觀測、Telegram 400 及 tunnel 待查項目，整理已完成調查與舊 bridge 停用結果；依使用者要求將原被忽略的 todo.md 納入版本控制。
+
+- 14:56–14:57 HKT 即時唯讀健康核查：TikTok 最近一小時 10 筆查詢失敗、部分串流重複，當下 16 串流連敗皆為 0、pending=0；X 待辦 256→248、保存 8695→8703，查詢 failures=0；IG activeIssues=0 且有近期成功查詢，Telegram pollOk/telegramOk/deliveryReady=true、pending=0。現存核心容器 RestartCount 均為 0；X／Telegram 近期建立時間對應既有 ETA 修正部署，未見反覆崩潰證據。未改動服務。
+
 - 修正 X 封存 ETA 隨查看時間漂移：完成時間以最新進度時間計算，沒有新進度時保持固定；預測時間已過或超過五分鐘未更新時顯示無法估算。新增固定／更新／陳舊進度及預測過期回歸測試，先確認兩項測試失敗再修正；398 項 Node 測試通過，程式審查通過。仍使用整段任務平均篇數耗時，不代表下載加速。 已同步 NAS（基底 bb7e581 加未提交修正），來源 SHA-256 a167af6e007c；Compose 驗證通過，僅重啟 ig-telegram／x-watch，X 恢復 running、pending 1197→1186，兩端既有修改保留。
 
 - X 下載／完成時間唯讀診斷：NAS `bb7e581` 的 x-watch healthy，mikuru_hositani 封存進度 7694→7719／8951，待辦無重試紀錄、failed=0，共享並行上限 3。確認 ETA 使用自封存開始的平均篇數耗時，且以每次查看的 now 加上剩餘時間；固定進度重播時，60 秒後顯示完成時間亦延後 60 秒。按 manifest mtime 統計，截至約 14:02 HKT，最近／前一個半小時為 455／749 篇、550／928 件媒體、435／870 MB；這是保存產物統計，非網路頻寬量測。較早／較新各 50 篇媒體抽樣分別約 12／62 MB，篇數不等於下載工作量；尚不能歸因 CDN 限速或 NAS 磁碟。未修改程式或重啟服務。
+
+- 依使用者要求停止 NAS 舊 x-archive-bridge，將容器 restart policy 由 unless-stopped 改為 no；13:49:17 HKT 已確認 exited、running=false、restart=no。保留容器及既有資料，未改動其他服務；日後以舊 Compose 重建仍可能套回原重啟設定。
+
+- 完成全 NAS 41 個容器唯讀錯誤調查：19 個運行中僅舊 x-archive-bridge unhealthy，確認主機狀態目錄消失、容器仍持有 deleted lock，SQLite 無法開啟後 worker 結束但 HTTP 存活；另區分 TikTok browser、Telegram 400、IG 已解除錯誤、tunnel／停止訊號。使用者確認剩餘 TikTok repost 為來源端不可存取。未修復或重啟服務，詳見 docs/nas-container-errors-research-20261117.md。
+
+- 完成 NAS TikTok catalog 唯讀穩定性調查：合併 2259 個跨平台每分鐘樣本，辨識 74 段應用健康異常及 74 次觀測恢復（非精確 Docker 紅燈次數），附完整時間表及比較。既有備份 13/16 串流為 browser transport 連敗；核實實際資源上限與範本不同、Docker 歷史事件僅餘 256 筆，未修改或重啟服務。詳見 docs/tiktok-stability-research-20261117.md。
 
 ## 2026-11-16
 
