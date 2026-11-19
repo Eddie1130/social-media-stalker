@@ -45,6 +45,18 @@ export function validateSettings(s) {
   validateXSettings(s);
   validateTikTokSettings(s);
   validateExportSettings(s);
+  for (const id of s.allowedIds) {
+    const user = s.users[id];
+    if (!user) continue;
+    if (id === s.ownerId) continue;
+    user.daily = false;
+    user.mediaNotifications = true;
+    for (const targets of [user.targets, user.xTargets, user.tiktokTargets]) {
+      for (const sub of Object.values(targets || {})) {
+        for (const pref of Object.values(sub.notifications)) pref.enabled = true;
+      }
+    }
+  }
   return s;
 }
 export function readSettings(file) {

@@ -29,7 +29,7 @@ function accountMenu(user, name) {
   const sub = userTarget(user, name);
   if (!sub) return panel('此帳號已不在你的清單中。', [back]);
   const gen = sub.generation.slice(0, 8);
-  return panel(`@${name}\n個人通知設定（本機下載持續進行）`, [
+  return panel(`@${name}\n帳號監看設定`, [
     ...kinds.map(kind => [button(`${labels[kind]}：${sub.notifications[kind].enabled ? '✅ 開啟' : '🔕 關閉'}`, `set:${name}:${kind}:${sub.notifications[kind].enabled ? 0 : 1}:${gen}`)]),
     [button('📦 匯出全部封存', `ex:preview:ig:${name}`)],
     [button('🗑 移除監看', `remove:${name}:${gen}`)],
@@ -65,7 +65,8 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
     settings.replies[`ack:${update.update_id}`] = { method: 'answerCallbackQuery', body: { callback_query_id: callback.id }, userId: id, at: now };
     const parts = String(callback.data || '').split(':');
     const [action, name, kind, value, generation] = parts;
-    if (action === 'ex') result = exportCallback(settings, id, callback.data, update.update_id, now, exportEnabled, exportAccounts);
+    if (id !== settings.ownerId && /^(notifications|media|daily|set|tt:set|x:set)(:|$)/.test(callback.data)) result = mainMenu(user);
+    else if (action === 'ex') result = exportCallback(settings, id, callback.data, update.update_id, now, exportEnabled, exportAccounts);
     else if (action === 'tt') result = tikTokCallback(user, callback.data, now, overview('tt'));
     else if (action === 'x') result = xCallback(settings, user, id, callback.data, update.update_id, now, overview('x'));
     else if (action === 'menu') { delete user.waiting; result = mainMenu(user); }
@@ -153,7 +154,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
         const existing = !!userTarget(user, name);
         if (!existing) put(user.targets, name, subscription(now));
         delete user.waiting;
-        result = panel(`${existing ? '已在你的清單中' : '已加入監看'}：@${name}\n目前可取得的 Story 會依設定通知；舊貼文與精選只下載。\n若帳號不存在或無法存取，會顯示異常通知。`, [[button('設定通知', 'account:' + name)], back]);
+        result = panel(`${existing ? '已在你的清單中' : '已加入監看'}：@${name}\n目前可取得的 Story 會依設定通知；舊貼文與精選只下載。\n若帳號不存在或無法存取，會顯示異常通知。`, [[button('帳號設定', 'account:' + name)], back]);
       }
     } else result = mainMenu(user);
     if (ttResult && result !== ttResult) result = combinePanels(result, ttResult);
@@ -161,6 +162,11 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
   }
   if (id === settings.ownerId && (callback?.data === 'status' || (!callback && /^\/status$/.test(String(message.text || '').trim())))) result.reply_markup.inline_keyboard.splice(1, 0, [button('👑 所有監控帳號', 'admin-status:0')]);
   if (exportEnabled && id === settings.ownerId && result?.text?.startsWith('🔔 我的全域通知設定')) result.reply_markup.inline_keyboard.push([button('📦 管理員封存匯出', 'ex:platforms')]);
+  if (id !== settings.ownerId && result.reply_markup) {
+    result.reply_markup.inline_keyboard = result.reply_markup.inline_keyboard
+      .map(row => row.filter(b => !/^(notifications|set:|tt:set:|x:set:)/.test(b.callback_data)))
+      .filter(row => row.length);
+  }
   const messageId = callback?.message?.message_id || inputMessageId;
   if (user.waiting && Number.isSafeInteger(messageId) && messageId > 0) user.waitingMessageId = messageId;
   else delete user.waitingMessageId;

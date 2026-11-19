@@ -53,13 +53,13 @@ test('private-chat identity and whitelist checks reject unauthorized/group/forge
   assert.ok(s.users['200'].targets.alice); assert.equal(s.users['100'].targets.alice.joinedAt, 1000);
 });
 
-test('menu adds, independently configures, confirms removal, and rejects stale/replayed buttons', t => {
+test('menu adds, enforces member notifications, confirms removal, and rejects stale/replayed buttons', t => {
   const { settings: s } = fixture(t);
   applyUpdate(s, callback(1, 200, 'add'), 2000);
   applyUpdate(s, message(2, 200, '@ALICE'), 2100);
   const sub = s.users['200'].targets.alice, gen = sub.generation.slice(0, 8);
   applyUpdate(s, callback(3, 200, `set:alice:post:0:${gen}`), 2200);
-  assert.equal(sub.notifications.post.enabled, false); assert.equal(s.users['100'].targets.alice.notifications.post.enabled, true);
+  assert.equal(sub.notifications.post.enabled, true); assert.equal(s.users['100'].targets.alice.notifications.post.enabled, true);
   applyUpdate(s, callback(4, 200, `remove:alice:${gen}`), 2300);
   assert.ok(s.users['200'].targets.alice, 'removal requires confirmation');
   applyUpdate(s, callback(5, 200, `delete:alice:${gen}`), 2400);
@@ -333,7 +333,7 @@ test('complete controller persists update offsets and menus across restart using
   const env = { ...f.env, TELEGRAM_BOT_TOKEN: '123:abc', IG_STATE_DIR: f.state, IG_WATCHDOG_DIR: path.join(f.dir, 'watchdog') };
   await run({ env, args: ['--once'] });
   let saved = readSettings(settingsFile(env));
-  assert.ok(saved.users['200'].targets.charlie); assert.equal(saved.users['200'].daily, true); assert.equal(saved.offset, 4);
+  assert.ok(saved.users['200'].targets.charlie); assert.equal(saved.users['200'].daily, false); assert.equal(saved.offset, 4);
   const menuReplies = () => sent.filter(body => body.reply_markup && !body.text?.startsWith('每日摘要（')).length;
   const before = menuReplies();
   await run({ env, args: ['--once'] });

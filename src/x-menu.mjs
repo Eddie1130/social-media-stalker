@@ -14,7 +14,7 @@ function xAccountMenu(user, name) {
   const sub = xTarget(user, name);
   if (!sub) return panel('此 X 帳號已不在你的清單中。', [back]);
   const gen = sub.generation.slice(0, 8);
-  return panel(`X @${name}\n通知設定只影響你自己的 Telegram；本機封存持續進行。`, [
+  return panel(`X @${name}\n帳號監看設定`, [
     ...xKinds.map(kind => [button(`${labels[kind]}：${sub.notifications[kind].enabled ? '✅ 開啟' : '🔕 關閉'}`, `x:set:${name}:${kind}:${sub.notifications[kind].enabled ? 0 : 1}:${gen}`)]),
     [button('🗂 一鍵歷史回補', `x:history:${name}:${gen}`)],
     [button('📅 指定回補日期', `x:dates:${name}:${gen}`)],

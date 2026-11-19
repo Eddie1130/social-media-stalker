@@ -7,7 +7,7 @@ function account(user, name) {
   const sub = subFor(user, name);
   if (!sub) return panel('帳號已移除。');
   const gen = sub.generation.slice(0, 8);
-  return panel(`TikTok @${name}\n關閉通知仍持續本機封存；讚好清單為選用功能。`, [
+  return panel(`TikTok @${name}\n帳號監看設定`, [
     ...tikTokKinds.map(k => [b(`${tikTokLabels[k]}：${sub.notifications[k].enabled ? '✅' : '🔕'}`, `tt:set:${name}:${k}:${sub.notifications[k].enabled ? 0 : 1}:${gen}`)]),
     [b('📦 匯出全部封存（含 LIVE）', `ex:preview:tt:${name}`)],
     [b('移除訂閱', `tt:remove:${name}:${gen}`)],
