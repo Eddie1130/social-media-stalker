@@ -46,10 +46,10 @@ export async function fetchCatalog(plan,{signal,onChild=()=>{},script='/app/src/
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 }
 export class CatalogWatcher {
-  constructor({root,stateDir,target,username,log,fetcher=fetchCatalog,downloader=downloadStory,postsInterval=900,highlightsInterval=900}) {
+  constructor({root,stateDir,target,username,log,subscriptionPolicy,fetcher=fetchCatalog,downloader=downloadStory,postsInterval=900,highlightsInterval=900}) {
     if(!path.isAbsolute(root)||!/^\d+$/.test(target))throw Error('CATALOG_INVALID_CONFIG');
     for(const n of [postsInterval,highlightsInterval])if(!Number.isInteger(n)||n<300||n>86400)throw Error('CATALOG_INVALID_INTERVAL');
-    Object.assign(this,{root,target,username,log,fetcher,downloader,postsInterval,highlightsInterval});
+    Object.assign(this,{root,target,username,log,subscriptionPolicy,fetcher,downloader,postsInterval,highlightsInterval});
     this.file=path.join(stateDir,`catalog-${target}.json`);this.required=this.file+'.required';
     if(fs.existsSync(this.required)&&!fs.existsSync(this.file))throw Error('CATALOG_HISTORY_MISSING');
     try{this.state=JSON.parse(fs.readFileSync(this.file,'utf8'));}
@@ -99,36 +99,47 @@ export class CatalogWatcher {
       if(result.hasNext && (typeof result.cursor!=='string'||!result.cursor||(!plan.latest&&posts.cursors.includes(result.cursor))))throw Error('CATALOG_PAGINATION_LOOP');
       for(const post of result.posts) {
         if(!idOK(post.id)||!Array.isArray(post.media)||!post.media.length||typeof post.caption!=='string')throw Error('CATALOG_INVALID_POST');
+        if (this.cutoff && post.takenAt*1000 < this.cutoff && !posts.backfill) continue;
         let record=posts.records[post.id];
         if(!record){const index=posts.nextIndex++;record=posts.records[post.id]={index,folder:`posts/${sequence(index)}_${dateJST(post.takenAt)}`,parts:{},nextPart:1};}
         this.state.captions[post.id]={...this.state.captions[post.id],file:record.folder+'/caption.txt',text:post.caption,hash:hash(post.caption)};
-        for(const part of post.media)this.addAsset('post',post.id,part,record,'',post.code,!posts.baseline);
+        for(const part of post.media)this.addAsset('post',post.id,part,record,'',post.code,this.cutoff ? post.takenAt*1000 < this.cutoff : !posts.baseline);
       }
       if(plan.cursor===null)posts.latestScan={nextAt:Date.now()+this.postsInterval*1000,failures:0};
       // Latest-page refreshes ingest media without changing the history checkpoint.
       if(plan.latest)return;
-      posts.cursor=result.hasNext?result.cursor:null;
-      if(result.hasNext){posts.cursors.push(result.cursor);posts.nextAt=0;}
-      else{posts.cursors=[];posts.nextAt=Date.now()+this.postsInterval*1000;posts.baseline=true;}
+      const more=result.hasNext && (!this.cutoff || posts.backfill || result.posts.length && result.posts.at(-1).takenAt*1000>=this.cutoff && !posts.previousHead?.includes(result.posts.at(-1).id));
+      if(plan.cursor===null)posts.pendingHead=result.posts.map(p=>p.id);
+      posts.cursor=more?result.cursor:null;
+      if(more){posts.cursors.push(result.cursor);posts.nextAt=0;}
+      else{posts.previousHead=posts.pendingHead;posts.backfill=false;posts.cursors=[];posts.nextAt=Date.now()+this.postsInterval*1000;posts.baseline=true;}
       posts.failures=0;
     }else if(plan.kind==='tray'){
       if(!Array.isArray(result.highlights))throw Error('CATALOG_INVALID_TRAY_RESULT');
       highlights.lastTrayAt=Date.now();
       highlights.todo=result.highlights.map(h=>({id:highlightId(h.id),title:String(h.title)}));
-      if(!highlights.todo.length){highlights.baseline=true;highlights.nextAt=Date.now()+this.highlightsInterval*1000;}
+      if(!highlights.todo.length){highlights.backfill=false;highlights.baseline=true;highlights.nextAt=Date.now()+this.highlightsInterval*1000;}
       else highlights.nextAt=0;
       highlights.failures=0;
     }else{
       if(result.id!==plan.id||!Array.isArray(result.media))throw Error('CATALOG_INVALID_REEL_RESULT');
       let record=highlights.records[plan.id];
       if(!record){const index=highlights.nextIndex++;record=highlights.records[plan.id]={index,folder:`highlight/${String(index).padStart(2,'0')}_${safeTitle(plan.title)}`,parts:{},nextPart:1};}
-      for(const part of result.media)this.addAsset('highlight',plan.id,part,record,plan.title,null,!highlights.baseline);
+      for(const part of result.media.filter(part=>!this.cutoff || highlights.backfill || part.takenAt*1000>=this.cutoff))this.addAsset('highlight',plan.id,part,record,plan.title,null,this.cutoff ? part.takenAt*1000 < this.cutoff : !highlights.baseline);
       highlights.todo=highlights.todo.filter(h=>h.id!==plan.id);highlights.failures=0;
-      if(!highlights.todo.length){highlights.baseline=true;highlights.nextAt=Date.now()+this.highlightsInterval*1000;}
+      if(!highlights.todo.length){highlights.backfill=false;highlights.baseline=true;highlights.nextAt=Date.now()+this.highlightsInterval*1000;}
       else highlights.nextAt=0;
     }
   }
   async check(signal,onChild,{shouldYield=()=>false}={}) {
+    const policy = this.subscriptionPolicy?.();
+    this.cutoff = policy?.cutoff || 0;
+    if (policy?.historyAt > (this.state.historyAt || 0)) {
+      this.state.historyAt = policy.historyAt;
+      Object.assign(this.state.posts, {cursor:null,cursors:[],nextAt:0,backfill:true});
+      Object.assign(this.state.highlights, {todo:[],nextAt:0,backfill:true});
+      this.persist();
+    }
     for(const task of ['latestPosts','posts','highlights']) {
       if(shouldYield())break;
       const latest=task==='latestPosts',group=latest?'posts':task;

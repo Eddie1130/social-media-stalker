@@ -264,6 +264,14 @@ export function createTargetWatcher({ target, username, dir, root, interval, con
   if (archive) archive.enqueue(Object.values(state.pending));
   const catalog = env.IG_CATALOG_ENABLED === '1' ? new CatalogWatcher({
     root: root || '', stateDir: dir, target, username, log,
+    subscriptionPolicy: notifications ? () => {
+      const s = readSettings(settingsFile(env));
+      const subs = s.allowedIds.map(id => s.users[id]?.targets?.[username]).filter(Boolean);
+      return {
+        cutoff: subs.length && subs.every(sub => sub.monitorOnly) ? Math.min(...subs.map(sub => sub.joinedAt)) : 0,
+        historyAt: Math.max(0, ...subs.map(sub => sub.historyAt || 0)),
+      };
+    } : undefined,
     postsInterval: Number(env.IG_POSTS_INTERVAL_SECONDS || 900),
     fetcher: (plan, options) => fetchCatalog(plan, { ...options, env: { ...env, IG_TARGET_USERNAMES: '', IG_TARGET_USERNAME: username, IG_TARGET_USER_ID: target } }),
     highlightsInterval: Number(env.IG_HIGHLIGHTS_INTERVAL_SECONDS || 900),

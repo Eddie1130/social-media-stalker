@@ -31,6 +31,7 @@ function accountMenu(user, name) {
   const gen = sub.generation.slice(0, 8);
   return panel(`@${name}\n帳號監看設定`, [
     ...kinds.map(kind => [button(`${labels[kind]}：${sub.notifications[kind].enabled ? '✅ 開啟' : '🔕 關閉'}`, `set:${name}:${kind}:${sub.notifications[kind].enabled ? 0 : 1}:${gen}`)]),
+    [button('🗂 一鍵歷史回補', `history:${name}:${gen}`)],
     [button('📦 匯出全部封存', `ex:preview:ig:${name}`)],
     [button('🗑 移除監看', `remove:${name}:${gen}`)],
     [button('⬅️ 帳號清單', 'list:0')], back,
@@ -66,6 +67,10 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
     const parts = String(callback.data || '').split(':');
     const [action, name, kind, value, generation] = parts;
     if (id !== settings.ownerId && /^(notifications|media|daily|set|tt:set|x:set)(:|$)/.test(callback.data)) result = mainMenu(user);
+    else if (action === 'history' && validUsername(name) && userTarget(user, name)?.generation.slice(0, 8) === kind) {
+      userTarget(user, name).historyAt = now;
+      result = panel(`已申請 @${name} 的貼文與精選歷史回補。`, [back]);
+    }
     else if (action === 'ex') result = exportCallback(settings, id, callback.data, update.update_id, now, exportEnabled, exportAccounts);
     else if (action === 'tt') result = tikTokCallback(user, callback.data, now, overview('tt'));
     else if (action === 'x') result = xCallback(settings, user, id, callback.data, update.update_id, now, overview('x'));
@@ -88,7 +93,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
       delete user.waiting;
       result = panel('直接貼上 Instagram、X 或 TikTok 貼文連結即可下載。\n每則訊息最多 10 個連結；貼上帳號首頁會先詢問是否加入監看。', [back]);
     } else if (action === 'follow' && validUsername(name)) {
-      if (!userTarget(user, name)) put(user.targets, name, subscription(now));
+      if (!userTarget(user, name)) put(user.targets, name, { ...subscription(now), monitorOnly: true });
       result = accountMenu(user, name);
     } else if (action === 'admin-status' && id === settings.ownerId && /^\d{1,5}$/.test(name)) result = statusText.admin?.(Number(name)) || panel('狀態暫時無法取得。', [back]);
     else if (action === 'status') result = panel(statusText(id), [[button('🔄 重新整理', 'status')], back]);
@@ -152,9 +157,9 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
       if (!validUsername(name)) result = panel('使用者名稱格式不正確，請只輸入帳號名稱。', [back]);
       else {
         const existing = !!userTarget(user, name);
-        if (!existing) put(user.targets, name, subscription(now));
+        if (!existing) put(user.targets, name, { ...subscription(now), monitorOnly: true });
         delete user.waiting;
-        result = panel(`${existing ? '已在你的清單中' : '已加入監看'}：@${name}\n目前可取得的 Story 會依設定通知；舊貼文與精選只下載。\n若帳號不存在或無法存取，會顯示異常通知。`, [[button('帳號設定', 'account:' + name)], back]);
+        result = panel(`${existing ? '已在你的清單中' : '已加入監看'}：@${name}\n目前可取得的 Story 會依設定通知；舊貼文與精選須另行申請歷史回補。\n若帳號不存在或無法存取，會顯示異常通知。`, [[button('帳號設定', 'account:' + name)], back]);
       }
     } else result = mainMenu(user);
     if (ttResult && result !== ttResult) result = combinePanels(result, ttResult);

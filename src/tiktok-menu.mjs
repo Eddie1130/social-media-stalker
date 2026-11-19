@@ -9,6 +9,7 @@ function account(user, name) {
   const gen = sub.generation.slice(0, 8);
   return panel(`TikTok @${name}\n帳號監看設定`, [
     ...tikTokKinds.map(k => [b(`${tikTokLabels[k]}：${sub.notifications[k].enabled ? '✅' : '🔕'}`, `tt:set:${name}:${k}:${sub.notifications[k].enabled ? 0 : 1}:${gen}`)]),
+    [b('🗂 一鍵歷史回補', `tt:history:${name}:${gen}`)],
     [b('📦 匯出全部封存（含 LIVE）', `ex:preview:tt:${name}`)],
     [b('移除訂閱', `tt:remove:${name}:${gen}`)],
   ]);
@@ -23,6 +24,10 @@ export function tikTokCallback(user, data, now, overview) {
   if (action === 'add') { user.waiting = 'tt:add'; return panel('請輸入 TikTok 帳號，例如 @alice。輸入 /cancel 取消。'); }
   const sub = subFor(user, name);
   if (!tikTokName(name) || !sub) return panel('帳號已移除或選單已過期。');
+  if (action === 'history' && sub.generation.slice(0, 8) === kind) {
+    sub.historyAt = now;
+    return panel(`已申請 @${name} 的 TikTok 內容歷史回補。`);
+  }
   if (action === 'account') return account(user, name);
   if (action === 'set' && tikTokKinds.includes(kind) && ['0', '1'].includes(value) && sub.generation.slice(0, 8) === gen) {
     if (sub.notifications[kind].enabled !== (value === '1')) sub.notifications[kind] = { enabled: value === '1', since: now };
@@ -38,7 +43,7 @@ export function tikTokMessage(user, text, now) {
   const name = text.replace(/^\/ttadd\s+/, '').replace(/^@/, '').trim().toLowerCase();
   if (!tikTokName(name)) return panel('帳號格式不正確，請輸入 TikTok 使用者名稱。');
   user.tiktokTargets ||= {};
-  if (!subFor(user, name)) Object.defineProperty(user.tiktokTargets, name, { value: tikTokSubscription(now), enumerable: true, writable: true, configurable: true });
+  if (!subFor(user, name)) Object.defineProperty(user.tiktokTargets, name, { value: { ...tikTokSubscription(now), monitorOnly: true }, enumerable: true, writable: true, configurable: true });
   delete user.waiting;
   return account(user, name);
 }

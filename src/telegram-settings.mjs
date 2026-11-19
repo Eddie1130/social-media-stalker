@@ -48,6 +48,12 @@ export function validateSettings(s) {
   for (const id of s.allowedIds) {
     const user = s.users[id];
     if (!user) continue;
+    for (const targets of [user.targets, user.tiktokTargets]) {
+      for (const sub of Object.values(targets || {})) {
+        sub.monitorOnly = true;
+        if (sub.historyAt !== undefined && (!Number.isSafeInteger(sub.historyAt) || sub.historyAt < 0)) throw Error('TELEGRAM_SETTINGS_INVALID');
+      }
+    }
     if (id === s.ownerId) continue;
     user.daily = false;
     user.mediaNotifications = true;

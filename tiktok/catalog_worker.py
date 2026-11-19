@@ -366,6 +366,8 @@ class Catalog:
                     "userId": uid,
                     "generation": sub["generation"],
                     "joinedAt": sub["joinedAt"],
+                    "monitorOnly": sub.get("monitorOnly", False),
+                    "historyAt": sub.get("historyAt", 0),
                     "enabled": pref.get("enabled", True),
                     "since": pref.get("since", sub["joinedAt"]),
                 }
@@ -430,6 +432,9 @@ class Catalog:
     def poll(self, name, kind, settings):
         state, now = self.stream(name, kind), self.clock()
         recipients = self.target_recipients(settings, name, kind)
+        requested = max((r["historyAt"] for r in recipients), default=0)
+        if requested > state.get("historyAt", 0):
+            state.update(historyAt=requested, backfill=True, cursor="0", nextAt=0)
         if now < state["nextAt"] or not recipients:
             return
         original_state = copy.deepcopy(state)
@@ -477,11 +482,26 @@ class Catalog:
                     raise RuntimeError("TIKTOK_PROVIDER_PAGE_INVALID")
                 if more and str(result["cursor"]) == state.get("cursor", "0"):
                     raise RuntimeError("TIKTOK_PAGINATION_STALLED")
+            monitor = all(r["monitorOnly"] for r in recipients) and kind in ("post", "repost", "like", "story")
+            initial = monitor and not state["baseline"] and not state.get("backfill")
+            frontier = set(state.get("head", []))
+            overlap = any(item["id"] in frontier for item in rows)
+            if state.get("cursor", "0") == "0":
+                state["pendingHead"] = [item["id"] for item in rows]
+            cutoff = min(r["joinedAt"] for r in recipients)
+            reached_old = False
             all_known = bool(rows)
             for item in rows:
                 iid = item["id"]
                 if kind != "profile":
                     identifier(iid)
+                if monitor and not state.get("backfill"):
+                    old = kind in ("post", "story") and item.get("publishedAt", 0) < cutoff
+                    if old or initial and kind in ("repost", "like"):
+                        reached_old = iid == rows[-1]["id"]
+                        continue
+                    if iid in frontier and kind in ("repost", "like"):
+                        break
                 previous = self.db.execute(
                     "SELECT data FROM items WHERE target=? AND kind=? AND id=?",
                     (uid, kind, iid),
@@ -567,9 +587,11 @@ class Catalog:
                     if r["enabled"]
                     and (
                         kind == "story"
+                        or initial
                         or state["baseline"]
                         and state["generations"].get(r["userId"]) == r["generation"]
                     )
+                    and not state.get("backfill")
                     and now >= r["joinedAt"]
                     and now >= r["since"]
                 ]
@@ -602,6 +624,7 @@ class Catalog:
             if (
                 rows
                 and all_known
+                and not state.get("backfill")
                 and not state["baseline"]
                 and state.get("cursor", "0") != "0"
             ):
@@ -614,8 +637,13 @@ class Catalog:
                     f"recovery:{name}:{kind}:{state['nextAt']}",
                     notice_key=f"catalog:{name}:{kind}", notice_kind="recovery",
                 )
-            # Full initial baseline walks every page quietly; later scans stop at known overlap.
-            finished = not more or state["baseline"] and all_known
+            # Explicit backfills traverse every page, including previously seen pages.
+            finished = not more or not state.get("backfill") and (
+                state["baseline"] and all_known or monitor and (overlap or reached_old)
+            )
+            if finished:
+                state["head"] = state.pop("pendingHead", [])
+                state["backfill"] = False
             state.update(
                 userId=uid,
                 cursor="0" if finished else str(result["cursor"]),

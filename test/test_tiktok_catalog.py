@@ -513,6 +513,18 @@ class CatalogTests(unittest.TestCase):
             for row in self.catalog.db.execute("SELECT data FROM items")
         ]
 
+    def test_monitor_only_waits_for_explicit_history(self):
+        for user in self.settings["users"].values():
+            user["tiktokTargets"]["alice"].update(monitorOnly=True, joinedAt=100)
+        self.fetch.return_value = self.page(more=True, cursor="2")
+        self.catalog.poll("alice", "post", self.settings)
+        self.assertEqual(self.records(), [])
+        self.assertEqual(self.catalog.stream("alice", "post")["cursor"], "0")
+        self.settings["users"]["100"]["tiktokTargets"]["alice"]["historyAt"] = self.time
+        self.catalog.poll("alice", "post", self.settings)
+        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(self.catalog.stream("alice", "post")["cursor"], "2")
+
     def test_initial_baseline_all_pages_quiet_then_new_post_notifies_both(self):
         self.fetch.return_value = self.page(more=True, cursor="2")
         self.catalog.poll("alice", "post", self.settings)

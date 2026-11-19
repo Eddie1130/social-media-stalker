@@ -249,3 +249,22 @@ test('caption and media failures respect retry deadlines during background drain
  assert.equal(downloads,2);
  assert.equal(f.log.filter(row=>row.event==='CATALOG_CAPTION_RETRY').length,before+1);
 });
+
+test('managed catalog skips pre-subscription posts until requested', async t => {
+  const plan = {kind:'posts',cursor:null};
+  const policy = {cutoff:1792080000001, historyAt:0};
+  const {watch} = fixture(t, {
+    subscriptionPolicy: () => policy,
+    fetcher: async p => p.kind === 'tray' ? wrap({kind:'tray',highlights:[]})
+      : wrap(normalizeResponse(body([post()], true, 'older'), plan, '99')),
+  });
+  const signal = new AbortController().signal;
+  await watch.check(signal);
+  assert.deepEqual(watch.state.assets, {});
+  assert.equal(watch.state.posts.cursor, null);
+  policy.historyAt = Date.now();
+  await watch.check(signal);
+  assert.equal(watch.state.posts.cursor, 'older');
+  assert.equal(Object.keys(watch.state.assets).length, 2);
+  assert.ok(Object.values(watch.state.assets).every(asset => asset.telegramDone));
+});
