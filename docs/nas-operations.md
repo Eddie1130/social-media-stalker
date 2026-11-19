@@ -131,3 +131,7 @@ Telegram 的傳送方法也同樣快，但證明同步磁碟寫入會明顯阻�
 callback 資料或 token。queueMs 從控制器產生回覆起算，elapsedMs 包含
 API 排程等待及回覆完成後的 checkpoint；兩者均不涵蓋使用者點擊至
 Telegram 把更新交給控制器之前的網路時間，不能當成端到端延遲。
+
+## 2026-11-18 catalog 維護補充
+
+部署前執行 `./igctl preflight`；建置快取、相依服務 hash 漂移時的無中斷套用、profile 排他鎖及回復程序見 [catalog 可靠性紀錄](tiktok-catalog-reliability.md)。本次沒有修改 NAS 私有環境變數或放寬健康檢查。

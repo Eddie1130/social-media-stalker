@@ -32,7 +32,7 @@ Cookies、Local Storage、Session Storage、History 及整個 profile volume 保
 原磁碟快取只是被掛載遮蔽，沒有刪除。tmpfs 按實際使用量耗用 RAM，上限不預先保留記憶體；記憶體壓力下仍可能 swap，須一起監測。
 
 NAS Compose 處理 `network_mode: service:tiktok-vpn` 時，不要以 `--no-deps` 單獨重建 tiktok-catalog；
-使用 `./igctl up -d tiktok-catalog`，並核對相依容器是否被重建。此變更不需重新建置映像。
+使用 `./igctl up -d --no-build tiktok-vpn tiktok-catalog`，並先核對相依容器 hash，確認不會中斷錄影／上傳；若相依設定漂移，依 [catalog 維護程序](tiktok-catalog-reliability.md) 只重建 catalog。此 tmpfs 變更不需重新建置映像。
 
 回復方式：移除本次新增的 tmpfs 項目後重新建立受影響服務。保留原先 TikTok `/tmp` 掛載。
 
@@ -153,3 +153,5 @@ IG 約由 0.45 增至 0.90 MiB/min；兩個網路計數時間窗分別約 861 �
 TikTok 16 個串流失敗數為 0，manualRequired=false。
 四個 TikTok 服務映像 ID 與部署前相同，resolver/watch/catalog 的 NetworkMode 全部指向新 VPN ID。
 Compose config 驗證通過；其他專案的 VPN 仍為原 5 秒設定。
+
+Catalog 的 Chromium 快取應使用 profile 下各 32 MiB 的 Cache 與 Code Cache 掛載。直接量測掛載使用量及 /tmp 剩餘容量；只有 Chromium 參數不能保證實體上限。

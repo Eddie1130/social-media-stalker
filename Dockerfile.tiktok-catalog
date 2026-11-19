@@ -6,7 +6,7 @@ RUN playwright install --with-deps chromium
 WORKDIR /app
 COPY tiktok/catalog_provider.py tiktok/catalog_worker.py tiktok/worker.py tiktok/catalog_browser.py tiktok/catalog_media.py tiktok/catalog_regular_browser.py tiktok/catalog_layout.py tiktok/catalog_errors.py tiktok/catalog_metrics.py tiktok/catalog_query.py tiktok/catalog_scheduler.py tiktok/catalog_browser_worker.py tiktok/catalog_pressure.py ./
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
-COPY tiktok/archive_links.py ./
+COPY tiktok/archive_links.py tiktok/catalog_profile.py ./
 CMD ["python", "/app/catalog_worker.py"]
 
 FROM catalog AS login

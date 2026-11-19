@@ -1,6 +1,6 @@
 """Private stdin/stdout protocol. Exactly one owner of the persistent profile."""
 import json,os,re,select,signal,sys
-from catalog_errors import classify_failure
+from catalog_errors import classify_failure, safe_diagnostic
 
 def serve(reader,writer,session,idle_seconds=1):
     try:
@@ -17,6 +17,7 @@ def serve(reader,writer,session,idle_seconds=1):
             try:row['result']=session(job['name'],job['kind'],job.get('cursor','0'),job.get('itemId'))
             except Exception as error:
                 row['error']=classify_failure(error).safe_code
+                row['diagnostic']=safe_diagnostic(error)
                 retry=getattr(error,'retry_after',None)
                 if isinstance(retry,(int,float)) and 0<retry<=604800:row['retryAfter']=retry
             row['manualRequired']=session.manual_required

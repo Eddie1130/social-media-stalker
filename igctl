@@ -7,7 +7,8 @@ if [ "${1:-}" = "down" ]; then
     set -- --profile '*' down "$@"
 fi
 
-exec docker compose \
+compose() {
+    exec docker compose \
     -f docker-compose.yml \
     -f compose.watch.yml \
     -f compose.health.yml \
@@ -15,3 +16,38 @@ exec docker compose \
     -f compose.tiktok.yml \
     -f compose.export.yml \
     "$@"
+}
+
+# Explicit whole-project preflight accepts Compose global options after the verb,
+# e.g. ./igctl preflight --env-file custom.env. It never mutates containers.
+if [ "${1:-}" = preflight ]; then
+    shift
+    config=$(compose "$@" config)
+    warnings=$(docker info --format '{{json .Warnings}}')
+    case "$warnings" in
+        *'No cpu cfs quota support'*|*'No cpu cfs period support'*)
+            if printf '%s\n' "$config" | awk '$1 == "cpus:" {gsub(/["\047]/, "", $2); if ($2 + 0 > 0) found=1} END {exit !found}'; then
+                echo 'CPU CFS quotas unsupported: set nonzero *_CPU_LIMIT values to 0 in the NAS .env before deployment.' >&2
+                exit 1
+            fi
+            ;;
+    esac
+    echo 'Compose configuration and host CPU quota compatibility passed.'
+    exit 0
+fi
+
+is_up=0
+no_deps=0
+catalog=0
+for arg in "$@"; do
+    case "$arg" in
+        up) is_up=1 ;;
+        --no-deps) no_deps=1 ;;
+        tiktok-catalog) catalog=1 ;;
+    esac
+done
+if [ "$is_up" = 1 ] && [ "$catalog" = 1 ] && [ "$no_deps" = 1 ]; then
+    echo 'Use: ./igctl up -d --no-build tiktok-vpn tiktok-catalog (service network namespace requires dependencies).' >&2
+    exit 1
+fi
+compose "$@"

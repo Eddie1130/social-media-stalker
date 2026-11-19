@@ -11,11 +11,13 @@ from urllib.parse import urlparse
 from contextlib import suppress
 
 from catalog_browser import BrowserTransport
+from catalog_profile import ProfileLease
 
 
 class RegularBrowserTransport(BrowserTransport):
     def __init__(self, name, cookies):
         self.chrome = self.display = self.remote = self.lifecycle = self.cache = None
+        self.lease = None
         super().__init__(name, cookies)
 
     def open(self, name, cookies, manual=False):
@@ -24,8 +26,10 @@ class RegularBrowserTransport(BrowserTransport):
         profile = Path(os.getenv("TIKTOK_CATALOG_PROFILE", "/data/catalog-profile"))
         profile.mkdir(parents=True, exist_ok=True)
         profile.chmod(0o700)
-        # Keep login state persistent, but never reopen an old multi-GB HTTP cache.
-        self.cache = tempfile.TemporaryDirectory(prefix="tiktok-catalog-cache-")
+        self.lease = ProfileLease(profile)
+        # Use Compose's hard cache mounts when present. Chromium's size switch
+        # is a hint, not a bound on allocated cache files.
+        cache_root = self.prepare_cache(profile)
         self.engine = sync_playwright().start()
         # No automation/headless switches. CDP is loopback-only and not published.
         self.display = subprocess.Popen(
@@ -49,7 +53,7 @@ class RegularBrowserTransport(BrowserTransport):
                 "--autoplay-policy=user-gesture-required",
                 "--mute-audio",
                 "--disable-features=BackForwardCache",
-                "--disk-cache-dir=" + self.cache.name,
+                "--disk-cache-dir=" + cache_root,
                 "--disk-cache-size=33554432",
                 "--media-cache-size=8388608",
                 "--remote-debugging-address=127.0.0.1",
@@ -75,6 +79,14 @@ class RegularBrowserTransport(BrowserTransport):
         self.lifecycle = self.context.new_cdp_session(self.page)
         self.guard_workers()
         self.navigate(name)
+
+    def prepare_cache(self, profile):
+        if all(os.path.ismount(profile / "Default" / name)
+               for name in ("Cache", "Code Cache")):
+            return str(profile)
+        # Standalone/login smoke tools may not have the Compose cache mounts.
+        self.cache = tempfile.TemporaryDirectory(prefix="tiktok-catalog-cache-")
+        return self.cache.name
 
     def wait_for_cdp(self, timeout=60):
         """Allow disk-bound NAS startup without waiting indefinitely."""
@@ -174,7 +186,12 @@ class RegularBrowserTransport(BrowserTransport):
             except subprocess.TimeoutExpired:
                 self.display.kill()
                 self.display.wait()
-        if self.cache:
-            self.cache.cleanup()
+        try:
+            if self.cache:
+                self.cache.cleanup()
+        finally:
             self.cache = None
-        self.context = self.engine = self.lifecycle = None
+            self.context = self.engine = self.lifecycle = None
+            if self.lease:
+                self.lease.close()
+                self.lease = None

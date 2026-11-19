@@ -1,6 +1,7 @@
 """Independent durable catalog scheduler; never shares LIVE recording threads."""
 
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
+import copy
 import hashlib
 import json
 import logging
@@ -16,7 +17,7 @@ import threading
 import time
 import traceback
 
-from catalog_errors import classify_failure
+from catalog_errors import classify_failure, safe_diagnostic, sqlite_busy
 from catalog_metrics import record, snapshot as metrics_snapshot
 from catalog_provider import identifier, media_url
 from catalog_media import delivery_parts
@@ -431,6 +432,7 @@ class Catalog:
         recipients = self.target_recipients(settings, name, kind)
         if now < state["nextAt"] or not recipients:
             return
+        original_state = copy.deepcopy(state)
         try:
             result = self.fetcher(name, kind, state.get("cursor", "0"))
             uid = identifier(result["userId"])
@@ -634,8 +636,13 @@ class Catalog:
             self.save_stream(name, kind, state)
             self.db.commit()
         except Exception as error:
-            if STOP.is_set():return
             self.db.rollback()
+            if isinstance(error, sqlite3.Error):
+                raise
+            if STOP.is_set():return
+            # Neither a failed commit nor a later error may publish a cursor,
+            # baseline or profile hash whose page was rolled back.
+            state = original_state
             network_error = re.search(r"\bnet::(ERR_[A-Z_]+)\b", str(error))
             # Trace locations identify integration failures without logging private
             # exception messages, request URLs, cookies, or response bodies.
@@ -644,6 +651,9 @@ class Catalog:
                 "username": name,
                 "kind": kind,
                 "exception": type(error).__name__,
+                "failureCode": classify_failure(error).safe_code,
+                "failureCategory": classify_failure(error).category,
+                "browserDiagnostic": getattr(error, "browser_diagnostic", None),
                 "networkError": network_error.group(1) if network_error else None,
                 "frames": [
                     {"file": Path(frame.filename).name, "line": frame.lineno,
@@ -729,6 +739,11 @@ class Catalog:
                         notice_key=f"repair:{target}:{kind}:{iid}", notice_kind="recovery",
                     )
             except Exception as error:
+                if isinstance(error, sqlite3.Error):
+                    raise
+                if STOP.is_set():
+                    self.db.rollback()
+                    return
                 record["failures"] += 1
                 reason = str(error)
                 record["reason"] = (
@@ -879,6 +894,8 @@ class Catalog:
                             break
                         future = pool.submit(self.archive, record, reusable)
                     except Exception as error:
+                        if isinstance(error, sqlite3.Error):
+                            raise
                         future = Future()
                         future.set_exception(error)
                     inflight[future] = ((target, kind, iid, record), key)
@@ -928,6 +945,11 @@ class Catalog:
                 )
             record.update(status="ready", files=files, reason=None, failures=0, archiveAlerted=False)
         except Exception as error:
+            if isinstance(error, sqlite3.Error):
+                raise
+            if STOP.is_set():
+                self.db.rollback()
+                return
             record.pop("downloadRefreshed", None)
             record["failures"] += 1
             record["reason"] = "TIKTOK_ARCHIVE_FAILED"
@@ -1014,7 +1036,7 @@ class Catalog:
 
     def heartbeat(self):
         atomic(
-            self.folder / "health.json", {**self.health_snapshot, "at": self.clock(), "performance": metrics_snapshot()}
+            self.folder / "health.json", {**self.health_snapshot, "at": self.clock(), "storageBlocked": getattr(self, "storage_blocked", False), "performance": metrics_snapshot()}
         )
 
     def manual_requests(self, settings):
@@ -1060,7 +1082,12 @@ class Catalog:
                 record = {"item": item, "folder": name, "kind": "post", "target": item["authorId"], "at": request["at"], "manual": True}
                 event.update(username=name, kind="post", manual=True, files=(self.coordinator.archive_manual(record,self.read_settings()) if getattr(self,"coordinator",None) else self.archive(record)), text=f"TikTok @{name}\n{item.get('caption', '')}\n{url}", mediaCaption=f"@{name}\n{url}\n{item.get('caption', '')}"[:900])
                 done = 1
-            except Exception:
+            except Exception as error:
+                if isinstance(error, sqlite3.Error):
+                    raise
+                if STOP.is_set():
+                    self.db.rollback()
+                    return
                 attempts += 1
                 done = int(attempts >= 3)
             if done:
@@ -1098,6 +1125,51 @@ class Catalog:
         self.health()
 
 
+def run_catalog_loop(catalog, session, stop):
+    busy_failures = 0
+    while not stop.is_set():
+        try:
+            catalog.tick()
+        except sqlite3.OperationalError as error:
+            if not sqlite_busy(error):
+                raise
+            catalog.db.rollback()
+            catalog.storage_blocked = True
+            busy_failures += 1
+            delay = min(30, 2 ** min(busy_failures - 1, 5))
+            try:
+                print(json.dumps({"event": "TIKTOK_CATALOG_STORAGE_BUSY",
+                                  "failureCode": "TIKTOK_SQLITE_BUSY",
+                                  "retrySeconds": delay,
+                                  **safe_diagnostic(error)}), flush=True)
+            except OSError:
+                pass
+            stop.wait(delay)
+            continue
+        catalog.storage_blocked = False
+        busy_failures = 0
+        session.idle()
+        stop.wait(.25)
+
+
+def heartbeat_loop(catalog, stop, errors, interval=15):
+    while not stop.wait(interval):
+        try:
+            catalog.heartbeat()
+        except Exception as error:
+            errors.append(error)
+            stop.set()
+            try:
+                print(json.dumps({"event": "TIKTOK_CATALOG_HEARTBEAT_FAILED",
+                                  "failureCode": classify_failure(error).safe_code,
+                                  **safe_diagnostic(error)}), flush=True)
+            except OSError:
+                # A broken logging pipe must not disable shutdown or expose the
+                # original private exception through a thread traceback.
+                pass
+            return
+
+
 def main():
     logging.disable(logging.CRITICAL)
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1115,22 +1187,14 @@ def main():
     catalog.coordinator = ArchiveCoordinator(catalog, STOP)
     session.pump = lambda: catalog.coordinator.pump(catalog.read_settings())
 
-    def beat():
-        while not STOP.wait(15):
-            try:
-                catalog.heartbeat()
-            except Exception:
-                STOP.set()
-
-    heartbeat = threading.Thread(target=beat, daemon=True)
+    heartbeat_errors = []
+    heartbeat = threading.Thread(target=heartbeat_loop,
+                                 args=(catalog, STOP, heartbeat_errors), daemon=True)
     catalog.health()
     catalog.heartbeat()
     heartbeat.start()
     try:
-        while not STOP.is_set():
-            catalog.tick()
-            session.idle()
-            STOP.wait(.25)
+        run_catalog_loop(catalog, session, STOP)
     finally:
         STOP.set()
         heartbeat.join(timeout=2)
@@ -1140,6 +1204,8 @@ def main():
         finally:
             catalog.db.close()
             atomic(catalog.folder / "health.json", {"at": now_ms(), "phase": "stopped"})
+    if heartbeat_errors:
+        raise RuntimeError("TIKTOK_CATALOG_HEARTBEAT_FAILED") from None
 
 
 if __name__ == "__main__":

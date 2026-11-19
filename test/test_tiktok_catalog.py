@@ -221,6 +221,8 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["event"], "TIKTOK_CATALOG_POLL_FAILED")
         self.assertEqual(rows[0]["exception"], "ValueError")
+        self.assertEqual(rows[0]["failureCode"], "TIKTOK_NETWORK_FAILED")
+        self.assertEqual(rows[0]["failureCategory"], "network")
         self.assertEqual(rows[0]["networkError"], "ERR_CONNECTION_RESET")
         self.assertEqual(rows[0]["frames"][-1]["function"], "broken_fetch")
         self.assertNotIn(secret, output.getvalue())

@@ -218,3 +218,7 @@ TikTok catalog 每輪最多處理 50 筆待下載內容，最多同時執行 3 �
 15 秒是開始新工作的派工期限，不是整批完成期限。已開始的下載或影片分段會
 等待完成並保存進度；剩餘內容留待下一輪。這只提高封存吞吐量，不會縮短平台
 檢查間隔，也不會改變直播錄影或 Telegram 傳送併發。
+
+### NAS catalog 維護與排障
+
+catalog／人工登入現在以 profile 內的 `.catalog-owner.lock` flock 互斥；此檔不含 cookies，勿刪除或替換運行中使用的鎖檔。部署前先做 `./igctl preflight`，再依 [可靠性維護程序](tiktok-catalog-reliability.md) 核對相依 hash、備份與套用映像。查詢失敗日誌附安全分類及子程序來源位置；不輸出原始回應或例外訊息。沒有新增環境變數，既有 CAPTCHA／登入限制仍須人工完成。

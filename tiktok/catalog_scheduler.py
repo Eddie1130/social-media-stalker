@@ -1,6 +1,7 @@
 """Media completion/checkpoint coordinator; all database calls stay on its owner."""
 from concurrent.futures import ThreadPoolExecutor
-import json,time
+import json,time,sqlite3
+from contextlib import suppress
 from catalog_layout import account_media
 from catalog_pressure import archive_limits
 from catalog_metrics import record
@@ -14,7 +15,7 @@ class ArchiveCoordinator:
                 job,key=self.active[future]
                 if not future.cancelled():c.finish_archive(job,future,settings)
                 self.active.pop(future);self.busy.discard(key)
-                record('queue_completed',1,{'platform':'tt','outcome':'ok' if not future.exception() else 'error'})
+                record('queue_completed',1,{'platform':'tt','outcome':'cancelled' if future.cancelled() else ('error' if future.exception() else 'ok')})
         if self.stop.is_set() or self.closing:return
         capacity=min(self.max_workers,archive_limits(c.state_dir)["downloadConcurrency"])
         if len(self.active)+self.manual_count>=capacity:return
@@ -41,11 +42,19 @@ class ArchiveCoordinator:
         folder=('manual/' if r.get('manual') else '')+r['folder']
         reusable=[account_media(c.root,c.db,folder,key,i) for i in range(1,len(r['item']['assets'])+1)]
         self.manual_count+=1;self.busy.add(key)
+        future=None
         try:
             future=self.pool.submit(c.archive,r,reusable)
             while not future.done():self.pump(settings);time.sleep(.05)
             return future.result()
-        finally:self.manual_count-=1;self.busy.discard(key)
+        finally:
+            try:
+                # A cooperative DB failure must not release the per-item guard
+                # while its manual download is still writing the same paths.
+                if future is not None and not future.done() and not future.cancel():
+                    with suppress(Exception):future.result()
+            finally:
+                self.manual_count-=1;self.busy.discard(key)
     def refresh_one(self,settings):
         if not self.refresh:return
         target,kind,iid,r=self.refresh.pop(0);c=self.catalog
@@ -54,7 +63,11 @@ class ArchiveCoordinator:
             if result['id']!=iid:raise RuntimeError('TIKTOK_ITEM_IDENTITY_INVALID')
             r['item']['assets']=result['assets'];r['downloadRefreshed']=True
             c.db.execute('UPDATE items SET data=? WHERE target=? AND kind=? AND id=?',(json.dumps(r),target,kind,iid));c.db.commit()
-        except Exception:
+        except Exception as error:
+            if isinstance(error,sqlite3.Error):raise
+            if self.stop.is_set():
+                c.db.rollback()
+                return
             r['retryAt']=c.clock()+60000
             c.db.execute('UPDATE items SET data=? WHERE target=? AND kind=? AND id=?',(json.dumps(r),target,kind,iid));c.db.commit()
         finally:self.refreshing.discard((target,kind,iid))

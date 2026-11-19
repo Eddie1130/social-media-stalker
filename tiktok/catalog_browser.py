@@ -1,5 +1,6 @@
 """Isolated Chromium transport. Never open Story playback or allow write requests."""
 
+import uuid
 import os
 import hashlib
 import json
@@ -14,6 +15,7 @@ def cookie_version(cookies):
 
 class BrowserTransport:
     def __init__(self, name, cookies, manual=False):
+        self.lease = None
         self.engine = None
         self.context = None
         try:
@@ -29,6 +31,8 @@ class BrowserTransport:
         profile = Path(os.getenv("TIKTOK_CATALOG_PROFILE", "/data/catalog-profile"))
         profile.mkdir(parents=True, exist_ok=True)
         profile.chmod(0o700)
+        from catalog_profile import ProfileLease
+        self.lease = ProfileLease(profile)
         self.context = self.engine.chromium.launch_persistent_context(
             str(profile),
             headless=not manual,
@@ -134,6 +138,8 @@ class BrowserTransport:
             return SimpleNamespace(
                 status_code=200, text=self.page.content(), url=url, history=[]
             )
+        if urlparse(url).path == "/api/post/item_list/":
+            return self.post_response(url)
         response = self.page.evaluate(
             """async url => {
           const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 25000);
@@ -146,11 +152,50 @@ class BrowserTransport:
             status_code=response["status"], text=response["text"], url=url, history=[],headers={"Retry-After":response.get("retryAfter")}
         )
 
+    def post_response(self, url):
+        trace = {"id": uuid.uuid4().hex, "stage": "fetch"}
+        value = self.page.evaluate("""async url => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 25000);
+          const meta = {};
+          try {
+            const r = await fetch(url, {credentials:'include', signal:controller.signal});
+            meta.status = r.status;
+            const length = r.headers.get('Content-Length');
+            meta.declaredBytes = length !== null && /^\\d{1,15}$/.test(length) ? Number(length) : null;
+            const mime = (r.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+            meta.contentType = ['application/json','text/html','text/plain'].includes(mime)
+              ? mime : (mime ? 'other' : null);
+            const bytes = await r.arrayBuffer();
+            meta.readBytes = bytes.byteLength;
+            return {meta, text:new TextDecoder().decode(bytes), retryAfter:r.headers.get('Retry-After')};
+          } catch (e) {
+            const name = ['AbortError','TimeoutError','TypeError'].includes(e.name) ? e.name : 'Error';
+            return {meta, error:name};
+          } finally { clearTimeout(timer); }
+        }""", url)
+        trace.update(value["meta"])
+        if "error" in value:
+            trace.update(stage="read" if "status" in trace else "fetch", readError=value["error"])
+            error = (TimeoutError("TIKTOK_POST_TIMEOUT") if value["error"] in ("TimeoutError", "AbortError")
+                     else RuntimeError("TIKTOK_POST_FETCH_FAILED"))
+            error.post_trace = trace
+            raise error
+        trace["stage"] = "read_complete"
+        return SimpleNamespace(status_code=trace["status"], text=value["text"], url=url,
+                               history=[], headers={"Retry-After": value.get("retryAfter")},
+                               post_trace=trace)
+
     def close(self):
         try:
             if self.context:
                 self.context.close()
         finally:
-            if self.engine:
-                self.engine.stop()
-            self.context = self.engine = None
+            try:
+                if self.engine:
+                    self.engine.stop()
+            finally:
+                self.context = self.engine = None
+                if self.lease:
+                    self.lease.close()
+                    self.lease = None

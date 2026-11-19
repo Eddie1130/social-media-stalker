@@ -241,7 +241,11 @@ def fetch_page(request, transport=None):
         if response.status_code != 200:
             raise ProviderError("TIKTOK_HTTP_REJECTED")
         if not response.text.strip():
-            raise ProviderError("TIKTOK_EMPTY_RESPONSE")
+            error = ProviderError("TIKTOK_EMPTY_RESPONSE")
+            trace = getattr(response, "post_trace", None)
+            if trace:
+                error.post_trace = dict(trace, stage="provider_empty", providerChars=len(response.text))
+            raise error
         return response
 
     ex.request = readonly

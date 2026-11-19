@@ -13,3 +13,16 @@ class MetricsTests(unittest.TestCase):
   m=PerformanceMetrics()
   for i in range(100):m.record('api_http',i+1)
   self.assertEqual(m.snapshot()['series'][0]['p95'],100)
+
+class ObserverTests(unittest.TestCase):
+ def test_storage_blockage_is_visible_in_private_observation_summary(self):
+  import importlib.util,json,tempfile,time
+  script=Path(__file__).resolve().parents[1]/'scripts/collect-nas-performance.py'
+  spec=importlib.util.spec_from_file_location('catalog_observer_fixture',script)
+  module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+  with tempfile.TemporaryDirectory() as folder:
+   file=Path(folder)/'data/watch/tiktok/catalog/health.json';file.parent.mkdir(parents=True)
+   file.write_text(json.dumps({'at':int(time.time()*1000),'phase':'running','storageBlocked':True,'targets':{}}))
+   summary=module.collect(folder)['services']['tt']
+   self.assertTrue(summary['storageBlocked'])
+   self.assertNotIn('targets',summary)

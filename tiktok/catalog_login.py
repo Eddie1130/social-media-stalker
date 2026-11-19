@@ -32,12 +32,22 @@ def prepare_profile(profile, cookie_map):
 
 
 def main():
-    from playwright.sync_api import sync_playwright
-
     profile = Path(os.getenv("TIKTOK_CATALOG_PROFILE", "/data/catalog-profile"))
     from worker import cookies
 
-    prepare_profile(profile, cookies())
+    from catalog_profile import ProfileLease
+
+    lease = ProfileLease(profile)
+    try:
+        run_login(profile, cookies())
+    finally:
+        lease.close()
+
+
+def run_login(profile, cookie_map):
+    from playwright.sync_api import sync_playwright
+
+    prepare_profile(profile, cookie_map)
     # Playwright locates the installed binary; it does not launch/control this browser.
     with sync_playwright() as engine:
         executable = engine.chromium.executable_path

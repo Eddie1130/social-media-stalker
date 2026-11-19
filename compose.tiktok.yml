@@ -113,9 +113,10 @@ services:
       - ${IG_DATA_DIR:-./data}/watch:/app/state
       - ${IG_DOWNLOAD_DIR:-./downloads}:/downloads
     restart: unless-stopped
-    stop_grace_period: 45s
+    # Existing ffprobe may wait 60s; allow browser reap and durable checkpoints.
+    stop_grace_period: 2m
     healthcheck:
-      test: [CMD, python, -c, "import json,time; h=json.load(open('/app/state/tiktok/catalog/health.json')); assert time.time()*1000-h['at']<120000 and h.get('phase')!='stopped' and not h.get('manualRequired') and not any(s.get('failures') for t in h.get('targets',{}).values() for s in t.values())"]
+      test: [CMD, python, -c, "import json,time; h=json.load(open('/app/state/tiktok/catalog/health.json')); assert time.time()*1000-h['at']<120000 and h.get('phase')!='stopped' and not h.get('manualRequired') and not h.get('storageBlocked') and not any(s.get('failures') for t in h.get('targets',{}).values() for s in t.values())"]
       interval: 30s
       timeout: 5s
       retries: 3

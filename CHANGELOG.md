@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-19
+
+- 正式 NAS 診斷映像在 13:40 HKT 啟動，13:56 已捕捉首筆自然貼文失敗：HTTP 200、application/json、宣告長度 0、Chromium 實讀 0 bytes、provider 收到 0 字元。空本文在瀏覽器可見的 HTTP 回應層已存在；目前無法識別是哪個上游節點產生。當次核對四條貼文均已成功輪詢過，容器 healthy、RestartCount=0。
+- 貼文 HTTP 空回應診斷：只在 /api/post/item_list/ 讀取失敗或最終空回應時附加隨機識別碼、狀態、白名單 MIME、宣告與 Chromium 實讀長度、provider 字元數或讀取錯誤類型。缺少長度保留 null，正文及 URL 不加入診斷。正式基底 8281505aa598 的獨立診斷映像 404e0f0c833a 已通過斷網真 Chromium 空本文／JSON／截斷傳輸實測。
+- 過夜日誌交叉核對：57 次空回應全部來自貼文，四個目標分別佔 12、13、16、16 次；最長異常亦涉及全部四個目標。兩筆 ERR_INSUFFICIENT_RESOURCES 相隔約兩秒，對應同一次後續瀏覽器失聯；31 次失聯中僅一次在前五分鐘有此錯誤。
+- NAS catalog 映像 8281505aa598 在 13 小時 45 分鐘內有四段 unhealthy，均自行恢復。最長一段為 04:18–04:48 HKT，該段連同前兩分鐘的 15 次輪詢失敗全為 post HTTP 200 空白回應，樣本中貼文距上次成功最長 36 分 31 秒。其餘時段涉及導航或請求逾時、瀏覽器失聯及 JSON 解碼失敗。兩次 Chromium ERR_INSUFFICIENT_RESOURCES 的具體資源仍未確定。
+
+## 2026-11-18
+
+- 修正 TikTok catalog 的 SQLite 鎖競爭。正式 NAS 曾因慢讀交易使兩次 commit 失敗而退出。BUSY／LOCKED 現在 rollback 後可取消退避；頁面提交失敗保留原 cursor，手動工作、修復及重新整理保留重試預算。受控停止不會消耗業務重試，取消的 future 不會令清理再次失敗。
+- 清除 browser worker 結束後仍持有 IPC pipe 的子程序；reader 與 login 共用 profile 排他鎖。heartbeat 寫入失敗會安全停止並回報非零狀態，診斷保留例外分類與位置。storageBlocked 納入健康檢查與去識別化觀測。
+- Chromium HTTP cache 曾在 256 MiB 的 /tmp 內佔用約 221 MB。普通 transport 改用既有的兩個 32 MiB profile cache 掛載；獨立執行保留暫存快取。catalog 停止預算從 45 秒改為 2 分鐘，以容納既有 60 秒 ffprobe 等待與瀏覽器清理。
+- 增加唯讀 Compose／CPU quota preflight、阻止 catalog 使用不相容的 --no-deps。排除約 19.9 GiB 的 NAS 匯入副本，實測既有 legacy builder 重用 apt、pip 及 Playwright 快取。
+- 本機 Python 共 201 項（198 通過、3 跳過），Node 398 項通過。原容器 exited(0) 的停止來源仍未知。歷次故障注入、部署、資料核對與剩餘限制見 docs/tiktok-catalog-reliability.md。
+
 ## 2026-11-17
 
 - 更新 todo.md：保留 viewer／追蹤關係監控需求，新增 TikTok／X 安全錯誤診斷、Docker 歷史事件、跨平台進度與資源觀測、Telegram 400 及 tunnel 待查項目，整理已完成調查與舊 bridge 停用結果；依使用者要求將原被忽略的 todo.md 納入版本控制。

@@ -9,7 +9,7 @@ def collect(root):
     result={'at':int(time.time()*1000),'load':list(os.getloadavg()),'services':{}}
     for name,file in [('telegram',control/'health.json'),('ig',state/'health.json'),('x',state/'x/health.json'),('tt',state/'tiktok/catalog/health.json')]:
         try:
-            h=json.loads(file.read_text());s={k:h[k] for k in ('phase','failures','pollOk','telegramOk','pending','unresolved','manualRequired','performance') if k in h}
+            h=json.loads(file.read_text());s={k:h[k] for k in ('phase','failures','pollOk','telegramOk','pending','unresolved','manualRequired','storageBlocked','performance') if k in h}
             s['ageMs']=result['at']-h.get('at',0)
             if name=='tt':s['streams']=[{'kind':k,'failures':v.get('consecutiveFailures',v.get('failures',0)),'ageMs':result['at']-v.get('lastSuccess',0)} for t in h.get('targets',{}).values() for k,v in t.items()]
             result['services'][name]=s

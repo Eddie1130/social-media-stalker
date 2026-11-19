@@ -27,3 +27,39 @@ class RateLimitTests(unittest.TestCase):
   error=RuntimeError('TIKTOK_RATE_LIMITED');error.retry_after=300
   f.fetch.side_effect=error;f.catalog.poll('alice','post',f.settings)
   self.assertGreaterEqual(f.catalog.stream('alice','post')['nextAt'],f.time+300000)
+
+class DiagnosticTests(unittest.TestCase):
+ def test_child_diagnostic_preserves_location_without_exception_payload(self):
+  from catalog_errors import safe_diagnostic
+  import json
+  try:raise ValueError('private-cookie https://private.example net::ERR_CONNECTION_RESET')
+  except ValueError as error:diagnostic=safe_diagnostic(error)
+  self.assertEqual(diagnostic['exception'],'ValueError')
+  self.assertEqual(diagnostic['networkError'],'ERR_CONNECTION_RESET')
+  self.assertEqual(diagnostic['frames'][-1]['function'],'test_child_diagnostic_preserves_location_without_exception_payload')
+  self.assertNotIn('private-cookie',json.dumps(diagnostic))
+  self.assertNotIn('https://',json.dumps(diagnostic))
+
+class HeartbeatTests(unittest.TestCase):
+ def test_failed_heartbeat_reports_safe_cause_and_stops_owner(self):
+  import contextlib,io,json,errno
+  from catalog_worker import heartbeat_loop
+  stop=Mock();stop.wait.return_value=False
+  catalog=Mock();error=OSError(errno.ENOSPC,'private-cookie-secret')
+  catalog.heartbeat.side_effect=error
+  errors=[];output=io.StringIO()
+  with contextlib.redirect_stdout(output):heartbeat_loop(catalog,stop,errors,interval=0)
+  stop.set.assert_called_once();self.assertEqual(errors,[error])
+  row=json.loads(output.getvalue())
+  self.assertEqual(row['event'],'TIKTOK_CATALOG_HEARTBEAT_FAILED')
+  self.assertEqual(row['failureCode'],'TIKTOK_STORAGE_FAILED')
+  self.assertEqual(row['errno'],errno.ENOSPC)
+  self.assertNotIn('private-cookie-secret',output.getvalue())
+
+ def test_broken_log_pipe_cannot_disable_heartbeat_failure_shutdown(self):
+  from catalog_worker import heartbeat_loop
+  stop=Mock();stop.wait.return_value=False
+  catalog=Mock();catalog.heartbeat.side_effect=OSError('private-error')
+  errors=[]
+  with patch('builtins.print',side_effect=BrokenPipeError):heartbeat_loop(catalog,stop,errors,interval=0)
+  stop.set.assert_called_once();self.assertEqual(len(errors),1)

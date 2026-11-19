@@ -54,7 +54,10 @@ class BrowserWorker:
             while time.monotonic()<deadline:
                 if self.stop and self.stop.is_set():
                     self.close();raise RuntimeError('TIKTOK_STOPPING')
-                self.pump()
+                try:self.pump()
+                except BaseException:
+                    self.close()
+                    raise
                 try:row=self.results.get(timeout=.05)
                 except queue.Empty:continue
                 if row.get('workerClosed'):
@@ -63,6 +66,7 @@ class BrowserWorker:
                 self.manual_required=row.get('manualRequired',False)
                 if row.get('error'):
                     error=RuntimeError(row['error']);retry=row.get('retryAfter')
+                    error.browser_diagnostic=row.get('diagnostic')
                     if isinstance(retry,(int,float)) and 0<retry<=604800:error.retry_after=retry
                     raise error
                 return row['result']
@@ -73,11 +77,17 @@ class BrowserWorker:
         proc=self.proc;self.proc=None;self.pending=None
         if not proc:return
         try:
-            os.killpg(proc.pid,signal.SIGTERM)
+            try:os.killpg(proc.pid,signal.SIGTERM)
+            except ProcessLookupError:pass
             try:proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL);proc.wait(timeout=5)
-        except ProcessLookupError:pass
+            except subprocess.TimeoutExpired:pass
         finally:
+            # A reaped group leader does not mean Chromium and its descendants
+            # exited. Kill the remaining group before closing stdout: the reader
+            # thread can hold that pipe's lock while an orphan keeps it open.
+            try:os.killpg(proc.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            proc.wait(timeout=5)
             for f in (proc.stdin,proc.stdout):
                 if f:f.close()
             if self.scratch:

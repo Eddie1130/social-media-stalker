@@ -22,3 +22,7 @@ __pycache__
 .venv
 X Twitter Multi Account Monitor + NAS Archive.json
 tiktok-private/
+
+# Imported duplicate project and macOS archive metadata are never build inputs.
+/social-media-stalker/
+/__MACOSX/
