@@ -95,18 +95,23 @@ export class PersonalDelivery {
     } else if (event.type === 'media') {
       if (!['post', 'highlight'].includes(event.kind) || typeof event.id !== 'string' || !['sendPhoto', 'sendVideo', 'sendMediaGroup'].includes(event.method) || !Number.isFinite(event.publishedAt)) throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
       const media=catalogMedia(event.method,event.body),ids=event.ids??[event.id];
-      if(!Array.isArray(ids)||ids.length!==media.length||ids.some(id=>typeof id!=='string'||!id)||new Set(ids).size!==ids.length||(media.length>1&&event.kind!=='post'))throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
+      if(!Array.isArray(ids)||ids.length!==media.length||ids.some(id=>typeof id!=='string'||!id)||new Set(ids).size!==ids.length)throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
+      const times = event.publishedTimes ?? media.map(() => event.publishedAt);
+      if (!Array.isArray(times) || times.length !== media.length || !times.every(Number.isFinite)) throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
       if((event.postId!==undefined||event.postOrder!==undefined)&&(!/^\d+$/.test(event.postId)||!Number.isInteger(event.postOrder)||event.postOrder<1||event.kind!=='post'))throw Error('TELEGRAM_EVENT_MEDIA_INVALID');
       for (const id of s.allowedIds) for (const name of new Set(names)) {
         const sub = subscribed(s, id, name), pref = sub?.notifications[event.kind];
-        if (!sub || !mediaEnabled(s.users[id], event.at) || !pref.enabled || event.at < Math.max(sub.joinedAt, pref.since) || event.publishedAt < sub.joinedAt) continue;
+        if (!sub || !mediaEnabled(s.users[id], event.at) || !pref.enabled || event.at < Math.max(sub.joinedAt, pref.since)) continue;
         const key = this.key(id, sub, name, event.kind, event.id);
         const receiptKeys=ids.map(mediaId=>this.key(id,sub,name,event.kind,mediaId));
-        const indexes=media.map((_,i)=>i).filter(i=>!Object.hasOwn(this.state.seen,receiptKeys[i])&&!Object.entries(this.state.pending).some(([pendingKey,task])=>pendingKey!==key&&pendingKey!==receiptKeys[i]&&task.receiptKeys?.includes(receiptKeys[i])));
+        const indexes=media.map((_,i)=>i).filter(i=>times[i]>=sub.joinedAt&&!Object.hasOwn(this.state.seen,receiptKeys[i])&&!Object.entries(this.state.pending).some(([pendingKey,task])=>pendingKey!==key&&pendingKey!==receiptKeys[i]&&task.receiptKeys?.includes(receiptKeys[i])));
         if(!indexes.length)continue;
         const selected=indexes.map(i=>({...media[i]}));
         // If an older delivery already sent part of this post, do not repeat its caption.
-        if(indexes.length<media.length)for(const item of selected)delete item.caption;
+        if(indexes.length<media.length) {
+          for(const item of selected)delete item.caption;
+          if (event.kind === 'highlight' && media[0].caption) selected[0].caption = media[0].caption;
+        }
         const request=mediaBody(selected);
         for(const i of indexes)if(receiptKeys[i]!==key)delete this.state.pending[receiptKeys[i]];
         this.enqueue(key, { userId: id, type: 'media', username: name, generation: sub.generation, kind: event.kind,

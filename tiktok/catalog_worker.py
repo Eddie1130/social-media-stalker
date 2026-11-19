@@ -872,6 +872,7 @@ class Catalog:
             "kind": kind,
             "at": record["at"],
             "text": text,
+            "mediaCaption": text[:900],
             "files": files,
             "recipients": record["recipients"],
         }

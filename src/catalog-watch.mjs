@@ -209,9 +209,9 @@ export class CatalogWatcher {
     } finally { await Promise.all([...completions,progress.flush()]); }
     const groups=[],posts=new Map();
     for(const asset of pending.filter(a=>!a.telegramDone)) {
-      if(asset.kind!=='post'){groups.push([asset]);continue;}
-      if(!posts.has(asset.parent)){const group=[];posts.set(asset.parent,group);groups.push(group);}
-      posts.get(asset.parent).push(asset);
+      const key = asset.kind + ':' + asset.parent;
+      if(!posts.has(key)){const group=[];posts.set(key,group);groups.push(group);}
+      posts.get(key).push(asset);
     }
     groups.sort((a,b)=>(this.state.posts.records[a[0].parent]?.index??Infinity)-(this.state.posts.records[b[0].parent]?.index??Infinity));
     for(const group of groups) {
@@ -228,10 +228,10 @@ export class CatalogWatcher {
           ...(a.mediaType===2?{supports_streaming:true}:{}),...(!captionSent&&index===0?{caption:[...caption].slice(0,900).join('')}:{})}));
         const method=media.length>1?'sendMediaGroup':asset.mediaType===2?'sendVideo':'sendPhoto';
         const body=media.length>1?{media}:{[media[0].type]:media[0].media,...(media[0].caption!==undefined?{caption:media[0].caption}:{}),...(asset.mediaType===2?{supports_streaming:true}:{})};
-        const ids=batch.map(a=>a.key),id=batch.length>1?`post:${asset.parent}:album:${batch.map(a=>a.id).join('-')}`:asset.key;
+        const ids=batch.map(a=>a.key),id=batch.length>1?`${asset.kind}:${asset.parent}:album:${batch.map(a=>a.id).join('-')}`:asset.key;
         for(const a of batch)this.log('CATALOG_TELEGRAM_STARTED',{key:a.key});
         let sent=false;sends++;
-        try{await sendTelegram(method,body,{id,ids,...(asset.kind==='post'?{postId:asset.parent,postOrder:this.state.posts.records[asset.parent].parts[asset.id]}:{}),kind:asset.kind==='post'?'post':'highlight',detectedAt:Math.min(...batch.map(a=>a.detectedAt)),publishedAt:asset.takenAt*1000});sent=true;}
+        try{await sendTelegram(method,body,{id,ids,...(asset.kind==='post'?{postId:asset.parent,postOrder:this.state.posts.records[asset.parent].parts[asset.id]}:{}),kind:asset.kind==='post'?'post':'highlight',detectedAt:Math.min(...batch.map(a=>a.detectedAt)),publishedAt:asset.takenAt*1000,publishedTimes:batch.map(a=>a.takenAt*1000)});sent=true;}
         catch(e){if(!e.message?.startsWith('TELEGRAM_'))throw e;ok=false;const reason=/^TELEGRAM_[A-Z0-9_]+$/.test(e.message)?e.message:'CATALOG_TELEGRAM_ERROR';for(const a of batch)this.log('CATALOG_TELEGRAM_RETRY',{key:a.key,reason});if(/_(401|403|429)$/.test(reason)||reason==='TELEGRAM_RETRY_WAIT')tgBlocked=true;}
         for(const a of batch){if(sent)a.telegramDone=true;a.lastAttemptAt=Date.now();}
         await this.persistAsync();

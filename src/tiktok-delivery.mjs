@@ -69,22 +69,36 @@ export class TikTokDelivery extends XDelivery {
           let body = { chat_id: recipient.userId, text: event.text }, method = 'sendMessage';
           if (content) { method = items[i].method; body = { chat_id: recipient.userId, ...contentBody(this.root, event, items[i]) }; }
           else if (items[i]) {
-            const relative = items[i];
-            if (!relative.startsWith(`tiktok/${event.username}/live/`) || relative.split(/[\\/]/).some(p => !p || p === '.' || p === '..') || !relative.endsWith('.mp4')) throw Error('TIKTOK_FILE_INVALID');
-            const root = fs.realpathSync(this.root), filename = fs.realpathSync(path.join(root, relative));
-            if (!filename.startsWith(root + path.sep) || !fs.statSync(filename).isFile() || fs.statSync(filename).size > 2_000_000_000) throw Error('TIKTOK_FILE_INVALID');
-            method = 'sendVideo';
-            body = { chat_id: recipient.userId, video: 'file://' + filename, caption: `🎥 TikTok LIVE recording\n${path.basename(filename)}`, supports_streaming: true };
-            const attributes = await videoAttributes(filename);
-            if (attributes) {
-              Object.assign(body, attributes);
-              const preview = await videoPreview(filename, attributes);
-              if (preview) {
-                const blob = new Blob([preview], { type: 'image/jpeg' });
-                files = [{ name: 'thumbnail', blob, filename: 'thumbnail.jpg' }, { name: 'cover0', blob, filename: 'cover.jpg' }];
-                body.thumbnail = 'attach://thumbnail'; body.cover = 'attach://cover0';
+            const group = items.slice(i, i + 10);
+            const media = [];
+            for (const [index, relative] of group.entries()) {
+              if (!relative.startsWith(`tiktok/${event.username}/live/`) || relative.split(/[\\/]/).some(p => !p || p === '.' || p === '..') || !relative.endsWith('.mp4')) throw Error('TIKTOK_FILE_INVALID');
+              const root = fs.realpathSync(this.root), filename = fs.realpathSync(path.join(root, relative));
+              if (!filename.startsWith(root + path.sep) || !fs.statSync(filename).isFile() || fs.statSync(filename).size > 2_000_000_000) throw Error('TIKTOK_FILE_INVALID');
+              const item = {type:'video', media:'file://' + filename, supports_streaming:true};
+              if (i === 1 && index === 0) item.caption = (event.text || `🎥 TikTok LIVE recording\n${path.basename(filename)}`).slice(0,1024);
+              const attributes = await videoAttributes(filename);
+              if (attributes) {
+                Object.assign(item, attributes);
+                const preview = await videoPreview(filename, attributes);
+                if (preview) {
+                  const blob = new Blob([preview], {type:'image/jpeg'});
+                  for (const field of ['thumbnail','cover']) {
+                    const name = field === 'thumbnail' && index === 0 ? field : field + index;
+                    files.push({name, blob, filename:field+'.jpg'});
+                    item[field] = 'attach://' + name;
+                  }
+                }
               }
+              media.push(item);
             }
+            if (media.length === 1) {
+              const {type, media:video, ...attributes} = media[0];
+              method = 'sendVideo'; body = {chat_id:recipient.userId, video, ...attributes};
+            } else {
+              method = 'sendMediaGroup'; body = {chat_id:recipient.userId, media};
+            }
+            i += group.length - 1;
           }
           const outcome = await this.send(client, entry, method, body, files, method === 'sendMediaGroup' ? body.media.length : 1, () => this.eligible(event, recipient));
           if (outcome !== 'sent') { ok = false; break; }

@@ -64,7 +64,7 @@ test('TikTok events share one local file, receipts persist, revoked users and ol
   assert.equal(calls.length,1);
   assert.ok(calls[0][1].video.startsWith('file://'));
   assert.equal(calls[0][1].chat_id,'100');
-  assert.equal(calls[0][1].caption,'🎥 TikTok LIVE recording\ntest.mp4');
+  assert.equal(calls[0][1].caption,'complete');
   const restarted = new TikTokDelivery({...f,settings:()=>s});
   atomic(eventFile,event); await restarted.drain(client);
   assert.equal(calls.length,1);
