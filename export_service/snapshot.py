@@ -1,4 +1,5 @@
 """Export only completed media and explicitly selected public metadata."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -10,6 +11,18 @@ from urllib.parse import urlsplit
 
 MAPS = {"ig": "targets", "x": "xTargets", "tt": "tiktokTargets"}
 MEDIA = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".gif", ".m4a"}
+
+
+# items_counts is keyed by status, stored username, then kind. Enumerate its
+# status keys so every historical status contributes folders, including NULL.
+TIKTOK_ACCOUNT_ROWS = """
+    SELECT items.data
+    FROM (SELECT DISTINCT json_extract(data, '$.status') AS status FROM items) AS statuses
+    CROSS JOIN items
+    WHERE json_extract(items.data, '$.status') IS statuses.status
+      AND json_extract(items.data, '$.username') = ?
+    ORDER BY items.rowid
+"""
 
 
 def valid_name(platform, name):
@@ -189,17 +202,15 @@ class Snapshot:
         if not db_file.exists() and db_file.with_suffix(".required").exists():
             raise ValueError("ARCHIVE_HISTORY_MISSING")
         if db_file.exists():
-            with sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True) as db:
-                rows = db.execute("SELECT data FROM items").fetchall()
-                for (raw,) in rows:
-                    record = json.loads(raw)
-                    if record.get("username") != self.name:
-                        continue
-                    folders.add(folder_name(record["folder"]))
-                    if record.get("status") != "ready":
-                        continue
-                    item = record["item"]
-                    self.records.append({"kind": record["kind"], "id": item.get("id"), "caption": item.get("caption", ""), "publishedAt": item.get("publishedAt"), "url": public_url(item.get("url"), "tt") or f"https://www.tiktok.com/@{item.get('author', self.name)}/video/{item.get('id', '')}", "files": record.get("files", [])})
+            with closing(sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True)) as db:
+                rows = db.execute(TIKTOK_ACCOUNT_ROWS, (self.name,)).fetchall()
+            for (raw,) in rows:
+                record = json.loads(raw)
+                folders.add(folder_name(record["folder"]))
+                if record.get("status") != "ready":
+                    continue
+                item = record["item"]
+                self.records.append({"kind": record["kind"], "id": item.get("id"), "caption": item.get("caption", ""), "publishedAt": item.get("publishedAt"), "url": public_url(item.get("url"), "tt") or f"https://www.tiktok.com/@{item.get('author', self.name)}/video/{item.get('id', '')}", "files": record.get("files", [])})
         self.account_roots = ["tiktok/" + folder_name(folder) for folder in sorted(folders)]
         for base in self.account_roots:
             for category in ("posts", "reposts", "stories", "profile", "likes", "live"):

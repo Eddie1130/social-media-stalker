@@ -2,6 +2,7 @@ import copy
 import http.client
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -60,6 +61,26 @@ class ExportTest(unittest.TestCase):
     def token(self, uid):
         reports = [r for r in self.service.state["reports"].values() if r["userId"] == uid and r.get("grant")]
         return reports[-1]["text"].split("/files/")[-1]
+
+    def test_tiktok_export_preserves_historical_names_statuses_and_row_order(self):
+        path = self.watch / "tiktok/catalog/catalog.sqlite"
+        path.parent.mkdir(parents=True)
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE items(target TEXT, kind TEXT, id TEXT, data TEXT)")
+            for uid, username, status, folder, iid in [
+                ("1", "alice", "ready", "old", "90"),
+                ("1", "renamed", "ready", "private", "91"),
+                ("2", "alice", None, "pending_folder", "92"),
+                ("2", "alice", "ready", "new", "10"),
+            ]:
+                data = dict(username=username, folder=folder, kind="post", item={"id": iid})
+                if status:
+                    data["status"] = status
+                db.execute("INSERT INTO items VALUES(?,?,?,?)", (uid, "post", iid, json.dumps(data)))
+        snapshot = Snapshot(self.root, self.watch, "tt", "alice")
+        snapshot.tiktok()
+        self.assertEqual([row["id"] for row in snapshot.records], ["90", "10"])
+        self.assertEqual(snapshot.account_roots, ["tiktok/alice", "tiktok/new", "tiktok/old", "tiktok/pending_folder"])
 
     def test_idle_ticks_skip_unchanged_state_and_throttle_heartbeat(self):
         with patch("export_service.server.atomic", wraps=atomic) as write:
