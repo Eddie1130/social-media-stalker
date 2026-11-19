@@ -41,3 +41,9 @@ test('manual output places IG-style caption on media without a separate text mes
   assert.equal(album[0].body.media[0].caption, '@alice');
   assert.equal(album[0].body.media[1].caption, undefined);
 });
+
+test('accepts shared LIVE links and preserves the intended room', () => {
+  const short = 'https://vt.tiktok.com/ZS9PRKm1TY14Y-ljFyz/';
+  assert.equal(parseTikTokLink(short), short);
+  assert.equal(parseTikTokLink('https://www.tiktok.com/@alice/live?room_id=123&tracking=x'), 'https://www.tiktok.com/@alice/live?room_id=123');
+});

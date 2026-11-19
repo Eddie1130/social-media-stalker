@@ -15,6 +15,11 @@ export class TikTokDelivery extends XDelivery {
   constructor(options) { super({ ...options, dir: path.join(options.dir, 'tiktok') }); this.uploadTimeoutMs = 3600000; }
   eligible(event, recipient) {
     const s = this.settings(), user = s.users[recipient.userId];
+    if (recipient.requestId) {
+      const request = s.tiktokRequests?.[recipient.requestId];
+      return s.allowedIds.includes(recipient.userId) && recipient.generation === recipient.requestId &&
+        request?.userId === recipient.userId && request.url === recipient.requestUrl;
+    }
     if (event.requestId) {
       const r = s.tiktokRequests?.[event.requestId];
       return s.allowedIds.includes(recipient.userId) && r?.userId === recipient.userId && event.requestUrl === r.url;

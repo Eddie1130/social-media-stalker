@@ -117,6 +117,33 @@ class TikTokWorkerTests(unittest.TestCase):
         self.assertEqual(emit.call_args_list[0].kwargs['notice_key'], emit.call_args_list[1].kwargs['notice_key'])
         self.assertFalse(file.exists())
 
+    def test_link_records_without_subscription_and_routes_to_requester(self):
+        job = {'id': '100-1-0', 'userId': '100', 'name': 'alice', 'room': '123',
+               'url': 'https://vt.tiktok.com/test/', 'at': 1}
+        config = {'allowedIds': ['100'], 'users': {'100': {}}, 'tiktokRequests': {job['id']: job}}
+        pending = w.STATE / 'live-requests' / (job['id'] + '.json')
+        w.atomic(pending, job)
+        api = Mock()
+        api.get_room_id_from_user.return_value = '123'
+        api.is_room_alive.return_value = True
+        class Base:
+            def __init__(self, config):
+                self.tiktok = api
+            def start_recording(self, name, room):
+                source = self._build_output_path(name)
+                Path(source).write_bytes(b'x' * 4096)
+                self.finalize(source)
+        modules = {'core.tiktok_recorder': SimpleNamespace(TikTokRecorder=Base),
+                   'utils.custom_exceptions': SimpleNamespace(UserLiveError=ValueError, LiveNotFound=LookupError),
+                   'utils.enums': SimpleNamespace(TikTokError=SimpleNamespace(USER_NOT_CURRENTLY_LIVE='offline'))}
+        with patch.dict(sys.modules, modules), patch.object(w, 'settings', return_value=config), patch.object(w, 'PROCESSING', queue.Queue()):
+            w.record_account('alice', {})
+        api.is_room_alive.assert_called_once_with('123')
+        self.assertFalse(pending.exists())
+        result = json.loads(next((w.STATE / 'processing').glob('*.json')).read_text())
+        self.assertEqual(result['recipients'], [w.manual_recipient(job)])
+        self.assertEqual(w.subscriptions(config), {})
+
     def run_live_monitor(self, outcomes):
         recipients = {'allowedIds': ['100'], 'users': {'100': {
             'tiktokTargets': {'alice': {'generation': 'test'}}}}}

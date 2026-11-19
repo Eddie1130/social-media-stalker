@@ -1070,7 +1070,7 @@ class Catalog:
 
     def manual_requests(self, settings):
         import re
-        from urllib.parse import urlparse, urljoin
+        from urllib.parse import urlparse, urljoin, parse_qs
         import requests
 
         self.db.execute("CREATE TABLE IF NOT EXISTS manual_jobs(id TEXT PRIMARY KEY, attempts INTEGER, done INTEGER)")
@@ -1089,12 +1089,23 @@ class Catalog:
                     parsed = urlparse(url)
                     if parsed.scheme != "https" or parsed.hostname not in ("tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com") or parsed.username or parsed.password or parsed.port:
                         raise ValueError("TIKTOK_INVALID_LINK")
+                    live = re.fullmatch(r"/@([A-Za-z0-9_][A-Za-z0-9_.]{0,23})/live/?", parsed.path)
+                    shared = re.fullmatch(r"/share/live/(\d{1,30})/?", parsed.path)
+                    if live or shared:
+                        room = shared[1] if shared else parse_qs(parsed.query).get("room_id", [None])[0]
+                        if room is not None and not re.fullmatch(r"\d{1,30}", room):
+                            raise ValueError("TIKTOK_ROOM_INVALID")
+                        pending = self.state_dir / "tiktok/live-requests" / (rid + ".json")
+                        atomic(pending, {**request, "name": live[1].lower() if live else None, "room": room})
+                        self.db.execute("INSERT OR REPLACE INTO manual_jobs VALUES(?,?,1)", (rid, attempts))
+                        self.db.commit()
+                        return
                     match = re.fullmatch(r"/@([A-Za-z0-9_][A-Za-z0-9_.]{0,23})/(?:video|photo)/(\d{1,30})/?", parsed.path)
                     if match:
                         break
-                    if not re.fullmatch(r"/(?:t/)?[A-Za-z0-9]+/?", parsed.path):
+                    if not re.fullmatch(r"/(?:t/)?[A-Za-z0-9_-]{1,128}/?", parsed.path):
                         raise ValueError("TIKTOK_INVALID_LINK")
-                    response = requests.get(url, allow_redirects=False, timeout=20)
+                    response = requests.get(url, allow_redirects=False, timeout=20, stream=True)
                     try:
                         if response.status_code not in (301, 302, 303, 307, 308):
                             raise ValueError("TIKTOK_SHORT_LINK_FAILED")

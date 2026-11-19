@@ -406,6 +406,23 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(self.download.call_count, 1)
         self.assertEqual(self.catalog.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0], 2)
 
+    @patch.dict(sys.modules, {"requests": Mock()})
+    def test_shared_live_redirect_dispatches_once_without_downloading_post(self):
+        rid = "100-1-0"
+        url = "https://vt.tiktok.com/ZS9PRKm1TY14Y-ljFyz/"
+        self.settings["tiktokRequests"] = {rid: {"id": rid, "userId": "100", "at": self.time, "url": url}}
+        response = sys.modules["requests"].get.return_value
+        response.status_code = 302
+        response.headers = {"Location": "https://www.tiktok.com/@alice/live?room_id=123"}
+        self.catalog.manual_requests(self.settings)
+        pending = self.catalog.state_dir / "tiktok/live-requests" / (rid + ".json")
+        self.assertEqual(json.loads(pending.read_text())["room"], "123")
+        self.assertEqual(json.loads(pending.read_text())["name"], "alice")
+        pending.unlink()
+        self.catalog.manual_requests(self.settings)
+        self.assertFalse(pending.exists())
+        self.fetch.assert_not_called()
+
     def test_transient_poll_notifies_only_third_failure_and_recovery(self):
         self.fetch.side_effect = RuntimeError("TIKTOK_PROVIDER_TIMEOUT")
         for attempt in range(1, 5):

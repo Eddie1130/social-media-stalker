@@ -170,7 +170,76 @@ def processing():
             PROCESSING.task_done()
 
 
-def record_account(name, cookie_map):
+def live_requests(config):
+    pending = {}
+    for file in (STATE / 'live-requests').glob('*.json'):
+        try:
+            job = json.loads(file.read_text())
+        except FileNotFoundError:
+            continue
+        uid, rid = job.get('userId'), file.stem
+        request = config.get('tiktokRequests', {}).get(rid)
+        if (not re.fullmatch(r'[1-9]\d{0,19}-\d+-\d+', rid) or not rid.startswith(str(uid) + '-')
+                or uid not in config['allowedIds'] or not request or request.get('userId') != uid
+                or request.get('url') != job.get('url') or job.get('id') != rid):
+            file.unlink(missing_ok=True)
+            continue
+        pending[rid] = job
+    return pending
+
+
+def manual_recipient(job):
+    return {'userId': job['userId'], 'generation': job['id'],
+            'requestId': job['id'], 'requestUrl': job['url']}
+
+
+def finish_request(job, text=None):
+    if text:
+        emit(job.get('name') or 'manual', 'notice', text, [manual_recipient(job)],
+             identity='live-request:' + job['id'])
+    (STATE / 'live-requests' / (job['id'] + '.json')).unlink(missing_ok=True)
+
+
+def merge_recipients(recipients, jobs):
+    by_user = {r['userId']: r for r in recipients}
+    for job in jobs:
+        by_user[job['userId']] = manual_recipient(job)
+    return list(by_user.values())
+
+
+def resolve_live_requests(config, cookie_map):
+    from core.tiktok_api import TikTokAPI
+    names = set()
+    for job in live_requests(config).values():
+        if time.time() * 1000 - job['at'] > 600000 and not (STATE / 'captures' / ((job.get('name') or '') + '.json')).is_file():
+            finish_request(job, '直播連結已過期，請重新傳送。')
+            continue
+        if job.get('name') is None:
+            try:
+                room = job['room']
+                if not re.fullmatch(r'\d{1,30}', room):
+                    raise ValueError('TIKTOK_ROOM_INVALID')
+                api = TikTokAPI(proxy=None, cookies=cookie_map)
+                if not api.is_room_alive(room):
+                    finish_request(job, '這場 TikTok 直播已結束或尚未開播。')
+                    continue
+                job['name'] = api.get_user_from_room_id(room).lower()
+                if not NAME.fullmatch(job['name']) or job['name'].endswith('.'):
+                    raise ValueError('TIKTOK_USERNAME_INVALID')
+                atomic(STATE / 'live-requests' / (job['id'] + '.json'), job)
+            except Exception:
+                job['name'] = None
+                finish_request(job, '暫時無法辨識這場直播，請稍後重新傳送連結。')
+                continue
+        if NAME.fullmatch(job['name']) and not job['name'].endswith('.'):
+            names.add(job['name'])
+        else:
+            job['name'] = None
+            finish_request(job, '直播帳號格式不正確。')
+    return names
+
+
+def record_account(name, cookie_map, wake=None):
     from core.tiktok_recorder import TikTokRecorder
     from utils.custom_exceptions import UserLiveError, LiveNotFound
     from utils.enums import TikTokError
@@ -183,7 +252,7 @@ def record_account(name, cookie_map):
             folder = ROOT / 'tiktok' / name / 'live'
             folder.mkdir(parents=True, exist_ok=True)
             source = str(folder / (self.stem + ('_hls.ts' if protocol == 'hls' else '_flv.mp4')))
-            atomic(STATE / 'captures' / (name + '.json'), {'source': source, 'dest': str(folder / (self.stem + '.mp4')), 'username': name, 'recipients': self.recipients, 'at': self.started})
+            atomic(STATE / 'captures' / (name + '.json'), {'source': source, 'dest': str(folder / (self.stem + '.mp4')), 'username': name, 'recipients': self.recipients, 'at': self.started, 'room': str(self.room_id)})
             return source
 
         def _download_stream(self, url, protocol):
@@ -213,8 +282,13 @@ def record_account(name, cookie_map):
 
         def finalize(self, source):
             job = {'source': source, 'dest': str(Path(source).parent / (self.stem + '.mp4')), 'username': name, 'recipients': self.recipients, 'at': self.started}
+            jobs = [j for j in live_requests(settings()).values() if j.get('name') == name
+                    and (not j.get('room') or j['room'] == str(self.room_id))]
+            job['recipients'] = merge_recipients(self.recipients, jobs)
             file = STATE / 'processing' / (self.stem + '_' + name + '.json')
             atomic(file, job)
+            for request in jobs:
+                finish_request(request)
             cleanup_recording_start(job)
             if STOP.is_set():
                 emit(name, 'notice', f'TikTok @{name} 錄影因服務停止而中斷，已保留原檔及轉檔工作。', self.recipients, notice_key=f'recording:{name}', notice_kind='error')
@@ -230,19 +304,31 @@ def record_account(name, cookie_map):
     recipients = []
     while not STOP.is_set():
         urgent = False
+        jobs = []
         try:
-            recipients = subscriptions(settings()).get(name, [])
-            if not recipients:
+            config = settings()
+            recipients = subscriptions(config).get(name, [])
+            jobs = [j for j in live_requests(config).values() if j.get('name') == name]
+            if not recipients and not jobs:
                 break
             status(name, '檢查直播中')
             room = rec.tiktok.get_room_id_from_user(name)
             if not room:
                 raise ValueError('TIKTOK_ROOM_LOOKUP_FAILED')
+            matching = []
+            for job in jobs:
+                if job.get('room') and job['room'] != str(room):
+                    finish_request(job, '連結所指的直播已結束。')
+                else:
+                    matching.append(job)
+            jobs = matching
+            if not jobs and not recipients:
+                break
             if rec.tiktok.is_room_alive(room):
                 if not re.fullmatch(r'\d{1,30}', str(room)):
                     raise ValueError('TIKTOK_ROOM_INVALID')
                 rec.room_id = room
-                rec.recipients = recipients
+                rec.recipients = merge_recipients(recipients, jobs)
                 rec.started = int(time.time() * 1000)
                 rec.stem = datetime.now(ZoneInfo('Asia/Tokyo')).strftime(f'TK_{name}_%Y.%m.%d_%H-%M-%S')
                 rec.announced = False
@@ -250,6 +336,12 @@ def record_account(name, cookie_map):
                 rec._recording_bytes = rec._stream_retry_failures = 0
                 rec._recording_phase = 'starting'
                 rec.start_recording(name, room)
+                for job in jobs:
+                    if (STATE / 'live-requests' / (job['id'] + '.json')).exists():
+                        finish_request(job, '未能取得可儲存的直播影片，請重新傳送連結。')
+            else:
+                for job in jobs:
+                    finish_request(job, f'TikTok @{name} 目前未開播。')
             if alerted:
                 emit(name, 'notice', f'TikTok @{name} 監控已恢復。', recipients, notice_key=f'live-monitor:{name}', notice_kind='recovery')
                 alerted = False
@@ -257,6 +349,8 @@ def record_account(name, cookie_map):
             status(name, '監看中')
         except (UserLiveError, LiveNotFound) as error:
             if str(TikTokError.USER_NOT_CURRENTLY_LIVE) in str(error):
+                for job in jobs:
+                    finish_request(job, f'TikTok @{name} 目前未開播。')
                 if alerted:
                     emit(name, 'notice', f'TikTok @{name} 監控已恢復。', recipients, notice_key=f'live-monitor:{name}', notice_kind='recovery')
                     alerted = False
@@ -269,12 +363,20 @@ def record_account(name, cookie_map):
             failures += 1
             urgent = needs_attention(error)
         if failures:
+            for job in jobs:
+                finish_request(job, '暫時無法啟動直播錄影，請稍後重新傳送連結。')
             abnormal = alerted or failures >= 3 or urgent
             status(name, '檢查／錄影異常，重試中' if abnormal else f'等待重試（{failures}/3）')
             if abnormal and not alerted:
                 emit(name, 'notice', f'TikTok @{name} 監控／錄影失敗，將持續重試。', recipients, notice_key=f'live-monitor:{name}', notice_kind='error')
                 alerted = True
-        STOP.wait(60)
+        if not recipients:
+            break
+        if wake is None:
+            STOP.wait(60)
+        else:
+            wake.wait(60)
+            wake.clear()
     status(name, '已停止監控')
 
 
@@ -289,8 +391,13 @@ def main():
         job = json.loads(capture.read_text())
         source = Path(job['source'])
         if source.exists() and source.stat().st_size >= 4096:
+            pending = [j for j in live_requests(settings()).values() if j.get('name') == job['username']
+                       and (not j.get('room') or j['room'] == job.get('room'))]
+            job['recipients'] = merge_recipients(job['recipients'], pending)
             file = STATE / 'processing' / capture.name
             atomic(file, job)
+            for request in pending:
+                finish_request(request)
             cleanup_recording_start(job)
             emit(job['username'], 'notice', 'TikTok 錄影曾因服務停止而中斷；正在處理保留的原檔。', job['recipients'], notice_key=f"recording:{job['username']}", notice_kind='error')
         capture.unlink()
@@ -298,21 +405,29 @@ def main():
         PROCESSING.put(file)
     processor = threading.Thread(target=processing)
     processor.start()
-    active = {}
+    active, wakes = {}, {}
     try:
         while not STOP.is_set():
             if not processor.is_alive():
                 raise RuntimeError('TIKTOK_PROCESSOR_STOPPED')
-            targets = subscriptions(settings()) if os.getenv('IG_TELEGRAM_CONTROL', '1') == '1' else {}
+            config = settings()
+            enabled = os.getenv('IG_TELEGRAM_CONTROL', '1') == '1'
+            requested = resolve_live_requests(config, cookie_map) if enabled else set()
+            targets = set(subscriptions(config)) | requested if enabled else set()
             for name in targets:
                 if name not in active or not active[name].is_alive():
-                    active[name] = threading.Thread(target=record_account, args=(name, cookie_map), daemon=True)
+                    wakes[name] = threading.Event()
+                    active[name] = threading.Thread(target=record_account, args=(name, cookie_map, wakes[name]), daemon=True)
                     active[name].start()
+                elif name in requested:
+                    wakes[name].set()
             with STATUS_LOCK:
                 atomic(STATE / 'health.json', {'at': int(time.time() * 1000), 'targets': dict(STATUS), 'active': sum(t.is_alive() for t in active.values())})
             STOP.wait(5)
     finally:
         STOP.set()
+        for wake in wakes.values():
+            wake.set()
         deadline = time.monotonic() + 45
         for thread in active.values():
             thread.join(timeout=max(0, deadline - time.monotonic()))

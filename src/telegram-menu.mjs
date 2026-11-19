@@ -122,7 +122,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
           count++;
         } catch {}
       }
-      ttResult = panel(`已加入 ${count} 個 TikTok 連結到下載佇列。${count < ttLinks.length ? '部分連結格式不支援。' : '完成後會回傳媒體。'}`, [back]);
+      ttResult = panel(`已加入 ${count} 個 TikTok 連結。${count < ttLinks.length ? '部分連結格式不支援。' : '直播會立即檢查並錄影，貼文會下載後回傳。'}`, [back]);
     }
     const xResult = totalLinks > 10 || /^\/(start|menu|cancel)(?:@[A-Za-z0-9_]+)?$/.test(text) ? undefined : xMessage(settings, user, id, text, linkedText, update.update_id, now);
     if (totalLinks > 10) result = panel('每則訊息最多 10 個連結，請分批傳送。', [back]);
