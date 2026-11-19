@@ -2,6 +2,7 @@
 
 ## 2026-11-19
 
+- 23:22–23:30 HKT 在正式 catalog 原 Chromium／VPN 工作階段被動觀察四個個人頁面。排定重試前 25 筆網站腳本貼文清單回應中，24 筆 HTTP 200、本文 0 bytes，1 筆含 19 個項目。23:30–23:32 四條 catalog 重試均為 HTTP 200、實讀 0 bytes。樣本未見明確 CAPTCHA；現有讀取防護仍啟用，未確定上游成因。
 - TikTok 單帳號匯出沿用 catalog 的狀態／username 索引，在 SQL 篩選歷史名稱並保留資料列順序與非 ready 資料夾。NAS 記憶體快照四個帳號共 2,972 筆逐筆比對一致，中位讀取及 JSON 處理由 144 ms 降至 33 ms。13:53 HKT 零長度回應後，四條貼文串流均在 363 秒內有成功紀錄；故障後第 23 秒樣本有一條貼文串流失敗，第 83 秒樣本四條失敗計數已全部歸零。
 - 正式 NAS 診斷映像在 13:40 HKT 啟動，13:56 已捕捉首筆自然貼文失敗：HTTP 200、application/json、宣告長度 0、Chromium 實讀 0 bytes、provider 收到 0 字元。空本文在瀏覽器可見的 HTTP 回應層已存在；目前無法識別是哪個上游節點產生。當次核對四條貼文均已成功輪詢過，容器 healthy、RestartCount=0。
 - 貼文 HTTP 空回應診斷：只在 /api/post/item_list/ 讀取失敗或最終空回應時附加隨機識別碼、狀態、白名單 MIME、宣告與 Chromium 實讀長度、provider 字元數或讀取錯誤類型。缺少長度保留 null，正文及 URL 不加入診斷。正式基底 8281505aa598 的獨立診斷映像 404e0f0c833a 已通過斷網真 Chromium 空本文／JSON／截斷傳輸實測。
