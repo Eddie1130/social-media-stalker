@@ -6,11 +6,11 @@ const ownLabel = (labels, key) => Object.hasOwn(labels, key) ? labels[key] : und
 const liveStatuses = new Set(['working', 'running', 'importing']);
 const errorStatuses = new Set(['retry', 'failed', 'partial', 'needs_start']);
 const statusLabels = { queued: '排隊中', working: '執行中', running: '執行中', importing: '匯入中', retry: '等待重試',
-  complete: '搜尋完成', ready: '完成', partial: '部分完成', needs_start: '請指定回補起日', failed: '失敗', cancelled: '已取消' };
+  complete: '搜尋完成', ready: '完成', partial: '部分完成', needs_start: '無法取得帳號建立日期', failed: '失敗', cancelled: '已取消' };
 const passLabels = { search_main: '主搜尋', search_replies: '回覆', search_media: '媒體', search_verify: '交叉驗證' };
 const actionLabels = { resolve: '解析帳號與建立日期', timeline_posts: '抓取近期貼文與回覆時間軸', timeline_media: '抓取近期媒體時間軸',
   export: '匯出貼文資料', importing: '匯入共用封存紀錄', archive: '下載／檢查本機媒體', rendering: '產生 Markdown 與媒體清單',
-  finished: '流程已結束', queued: '等待前方歷史回補任務', needs_start: '請指定回補起日，再重新申請' };
+  finished: '流程已結束', queued: '等待前方歷史回補任務', needs_start: '無法取得帳號建立日期，請稍後重試' };
 const hongKongTime = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 

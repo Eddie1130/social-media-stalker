@@ -153,7 +153,7 @@ test('missing start date is actionable and failed history retries without losing
   f.watcher.historyRunner=async()=>({status:'needs_start',reason:'X_START_DATE_REQUIRED'});
   f.watcher.startNextHistory(1000);await f.watcher.historyTask;await f.watcher.finishHistories();
   assert.equal(Object.values(f.watcher.state.history)[0].status,'needs_start');
-  assert.ok(events(f).some(e=>/指定起日/.test(e.text)));
+  assert.ok(events(f).some(e=>/無法取得帳號建立日期/.test(e.text)));
   const retry=f.watcher.enqueueHistory({username:'alice',userId:'100',start:'2020-01-01'},2000);
   f.watcher.historyRunner=async()=>{throw Error('X_NO_ACCOUNT_AVAILABLE');};
   f.watcher.startNextHistory(2000);await f.watcher.historyTask;

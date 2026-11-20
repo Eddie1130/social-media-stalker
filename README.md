@@ -166,7 +166,7 @@ docker compose run --rm ig-check node /app/src/guard-selftest.mjs
 | 新增 Instagram 訂閱 | `/add alice` 或「新增帳號」 |
 | 新增 X／TikTok 訂閱 | `/xadd alice`、`/ttadd alice` |
 | 下載連結 | 直接貼上連結，或 `/download <連結>` |
-| X 歷史回補 | `/xhistory alice`；指定 UTC 日期範圍：`/xhistory alice 2024-01-01 2025-01-01`，不含結束日 |
+| X 歷史回補 | `/xhistory alice`，自動封存完整歷史 |
 | 調整通知／取消訂閱 | 對應平台的帳號選單 |
 | 每日摘要 | 主選單「通知」啟用；預設關閉，啟用後於香港時間每日 20:00 發送 |
 | 取消輸入 | `/cancel` |

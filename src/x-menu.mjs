@@ -1,6 +1,6 @@
 import { platformMenu } from './platform-menu.mjs';
 import { validXUsername, xKinds, xLinks } from './x-model.mjs';
-import { xSubscription, xTarget, putXTarget, validXDate } from './x-settings.mjs';
+import { xSubscription, xTarget, putXTarget } from './x-settings.mjs';
 
 const labels = { post: '原創', repost: '轉發', reply: '回覆', quote: '引用' };
 const button = (text, callback_data) => ({ text, callback_data });
@@ -17,7 +17,6 @@ function xAccountMenu(user, name) {
   return panel(`X @${name}\n帳號監看設定`, [
     ...xKinds.map(kind => [button(`${labels[kind]}：${sub.notifications[kind].enabled ? '✅ 開啟' : '🔕 關閉'}`, `x:set:${name}:${kind}:${sub.notifications[kind].enabled ? 0 : 1}:${gen}`)]),
     [button('🗂 一鍵歷史回補', `x:history:${name}:${gen}`)],
-    [button('📅 指定回補日期', `x:dates:${name}:${gen}`)],
     [button('📦 匯出全部封存', `ex:preview:x:${name}`)],
     [button('🗑 移除監看', `x:remove:${name}:${gen}`)],
     [button('⬅️ X 帳號清單', 'x:list:0')], back,
@@ -31,18 +30,13 @@ function addTarget(user, raw, now) {
   delete user.waiting;
   return xAccountMenu(user, name);
 }
-function history(settings, user, id, updateId, name, now, start, end) {
+function history(settings, user, id, updateId, name, now) {
   if (!validXUsername(name) || !xTarget(user, name)) return panel('請先將此 X 帳號加入你自己的監看清單。', [back]);
-  if ((start !== undefined || end !== undefined) && (!validXDate(start) || !validXDate(end) || start >= end))
-    return panel('日期格式不正確。請使用 /xhistory 帳號 YYYY-MM-DD YYYY-MM-DD；結束日期不包含當天。', [back]);
-  if ((start && start > new Date(now).toISOString().slice(0, 10)) ||
-      (end && end > new Date(now + 86400000).toISOString().slice(0, 10)))
-    return panel('歷史回補日期不能超過申請當天；結束日期最多填 UTC 明天（不含當天）。', [back]);
   const requestId = `${id}-${updateId}-0`;
   settings.xRequests ||= {};
-  settings.xRequests[requestId] = { id: requestId, userId: id, type: 'history', username: name, at: now, ...(start ? { start, end } : {}) };
+  settings.xRequests[requestId] = { id: requestId, userId: id, type: 'history', username: name, at: now };
   delete user.waiting;
-  return panel(`已申請 @${name} 的歷史回補。\n${start ? `${start} 至 ${end}（不含結束當天）` : '自動從帳號建立日抓到啟動當天。'}\n同一目標共用任務，其他回補會排隊；只通知進度與結果。\n可按「我的狀態」查看進度。`, [back]);
+  return panel(`已申請 @${name} 的歷史回補。\n自動從帳號建立日抓到啟動當天。\n同一目標共用任務，其他回補會排隊；只通知進度與結果。\n可按「我的狀態」查看進度。`, [back]);
 }
 export function xCallback(settings, user, id, data, updateId, now, overview) {
   const [prefix, action, name, kind, value, generation] = String(data).split(':');
@@ -59,9 +53,8 @@ export function xCallback(settings, user, id, data, updateId, now, overview) {
     if (pref.enabled !== (value === '1')) { pref.enabled = value === '1'; pref.since = now; }
     return xAccountMenu(user, name);
   }
-  if (['remove', 'delete', 'history', 'dates'].includes(action) && sub?.generation.slice(0, 8) === kind) {
+  if (['remove', 'delete', 'history'].includes(action) && sub?.generation.slice(0, 8) === kind) {
     if (action === 'history') return history(settings, user, id, updateId, name, now);
-    if (action === 'dates') return panel(`請傳送：\n/xhistory ${name} YYYY-MM-DD YYYY-MM-DD\n例如 /xhistory ${name} 2024-01-01 2025-01-01\n結束日期不包含當天。`, [back]);
     if (action === 'remove') return panel(`要移除 X @${name} 嗎？\n保留本機檔案及歷史；其他使用者的訂閱不受影響。`, [[button('確認移除', `x:delete:${name}:${kind}`)], [button('取消', 'x:account:' + name)]]);
     delete user.xTargets[name]; return xListMenu(user, 0, overview);
   }
@@ -75,8 +68,8 @@ export function xMessage(settings, user, id, text, linkedText, updateId, now) {
   }
   if (/^\/xhistory(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
     const args = text.replace(/^\/xhistory(?:@[A-Za-z0-9_]+)?\s*/i, '').split(/\s+/);
-    if (![1, 3].includes(args.length)) return panel('請使用 /xhistory 帳號，或 /xhistory 帳號 YYYY-MM-DD YYYY-MM-DD。', [back]);
-    return history(settings, user, id, updateId, args[0].replace(/^@/, '').toLowerCase(), now, args[1], args[2]);
+    if (args.length !== 1) return panel('請使用 /xhistory 帳號，系統會自動封存完整歷史。', [back]);
+    return history(settings, user, id, updateId, args[0].replace(/^@/, '').toLowerCase(), now);
   }
   const candidates = linkedText.match(xLinkPattern) || [];
   if (candidates.length) {

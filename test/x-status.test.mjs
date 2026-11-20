@@ -131,7 +131,7 @@ test('archive and import progress use posts rather than files and never imply me
 
 test('phase descriptions cover resolve, timelines, exports, indexes and required start dates', () => {
   const phases = { resolve: '解析帳號', timeline_posts: '近期貼文與回覆', timeline_media: '近期媒體', export: '匯出貼文資料',
-    importing: '匯入共用封存', archive: '下載／檢查', rendering: '產生 Markdown', finished: '流程已結束', queued: '等待前方', needs_start: '指定回補起日' };
+    importing: '匯入共用封存', archive: '下載／檢查', rendering: '產生 Markdown', finished: '流程已結束', queued: '等待前方', needs_start: '無法取得帳號建立日期' };
   for (const [phase, label] of Object.entries(phases)) assert.ok(formatXHistory(job({ phase, status: phase === 'needs_start' ? 'needs_start' : 'working' }), now).includes(label), phase);
 });
 

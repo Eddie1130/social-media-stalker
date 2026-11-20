@@ -46,7 +46,7 @@ test('X settings use subscription generations and confirmation before removal', 
     for (const button of row) assert.ok(Buffer.byteLength(button.callback_data) <= 64);
 });
 
-test('X backfill requests require a current personal subscription and valid optional dates', t => {
+test('X backfill requests require a current personal subscription and reject date ranges', t => {
   const { settings: s } = fixture(t);
   applyUpdate(s, message(1, 100, '/xhistory alice'), 2000);
   assert.deepEqual(s.xRequests || {}, {});
@@ -54,21 +54,25 @@ test('X backfill requests require a current personal subscription and valid opti
   applyUpdate(s, message(3, 100, '/xhistory alice'), 2200);
   assert.deepEqual(s.xRequests['100-3-0'], { id: '100-3-0', userId: '100', type: 'history', username: 'alice', at: 2200 });
   applyUpdate(s, message(4, 100, '/xhistory alice 2024-01-01 2025-01-01'), Date.parse('2026-11-13T00:00:00Z'));
-  assert.equal(s.xRequests['100-4-0'].start, '2024-01-01');
-  assert.equal(s.xRequests['100-4-0'].end, '2025-01-01');
+  assert.equal(s.xRequests['100-4-0'], undefined);
   for (const [i, dates] of ['2024-02-30 2025-01-01', '2025-01-01 2024-01-01', '2024-01-01'].entries())
     applyUpdate(s, message(5 + i, 100, '/xhistory alice ' + dates), 2400);
-  assert.equal(Object.keys(s.xRequests).length, 2);
+  assert.equal(Object.keys(s.xRequests).length, 1);
   assert.equal(validateSettings(s), s);
 });
-test('future history ranges cannot occupy the shared worker queue', t => {
+test('date ranges and stale date buttons cannot enqueue history', t => {
   const f=fixture(t),s=f.settings,now=Date.parse('2026-11-13T09:00:00Z');
   applyUpdate(s,message(1,100,'/xadd alice'),now);
   applyUpdate(s,message(2,100,'/xhistory alice 2006-01-01 9999-12-31'),now);
   applyUpdate(s,message(3,100,'/xhistory alice 2026-11-14 2026-11-15'),now);
   assert.equal(Object.keys(s.xRequests||{}).length,0);
   applyUpdate(s,message(4,100,'/xhistory alice 2026-11-13 2026-11-14'),now);
-  assert.equal(Object.keys(s.xRequests).length,1);
+  assert.equal(Object.keys(s.xRequests||{}).length,0);
+  const gen=s.users['100'].xTargets.alice.generation.slice(0,8);
+  applyUpdate(s,callback(5,100,'x:dates:alice:'+gen),now);
+  assert.equal(Object.keys(s.xRequests||{}).length,0);
+  applyUpdate(s,callback(6,100,'x:account:alice'),now);
+  assert.ok(!s.replies['reply:6'].body.reply_markup.inline_keyboard.flat().some(b=>b.callback_data.startsWith('x:dates:')));
 });
 
 test('private identity and whitelist protect X buttons, commands and manual downloads', t => {

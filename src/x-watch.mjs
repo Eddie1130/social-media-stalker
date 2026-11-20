@@ -509,7 +509,7 @@ export class XWatcher {
         try {await this.renderHistory(job);}
         catch(error) {job.reason=safeReason(error);job.status='partial';}
       }
-      const labels={complete:'搜尋流程已完成',partial:'部分完成，仍有未完成區段',needs_start:'無法取得建立日期，請用 /xhistory 指定起日',failed:'失敗'};
+      const labels={complete:'搜尋流程已完成',partial:'部分完成，仍有未完成區段',needs_start:'無法取得帳號建立日期，請稍後重試',failed:'失敗'};
       if(!job.gap||job.requestIds.length||job.status!=='complete')this.notice(`X @${job.username} 歷史回補：${labels[job.status]||job.status}；已匯入 ${job.posts||0} 篇並封存可取得的媒體。搜尋完成不代表歷史完整無缺。`,job.username,`${job.id}:result`,job.userIds,{noticeKey:`history:${job.id}`,noticeKind:'progress'});
       job.reported=true;delete job.phase;this.persist();this.writeJob(job);
     }

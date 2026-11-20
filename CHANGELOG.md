@@ -2,6 +2,8 @@
 
 ## 2026-11-20
 
+- 移除 X／Twitter 指定日期回補按鈕及日期範圍指令入口，保留一鍵完整歷史封存。
+
 - Instagram、X、TikTok 完成歷史封存後，Telegram 帳號選單會移除一鍵回補按鈕，並顯示已封存。
 - 修正匯出將 Unicode 等價日文路徑及空白 caption.txt 誤報為缺失；Instagram 舊封存完成判斷改依掃描、媒體與說明狀態。
 
