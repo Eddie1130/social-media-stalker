@@ -102,7 +102,8 @@ test('mixed Instagram and X links enqueue both platforms independently', t => {
   applyUpdate(s, message(1, 100, 'https://www.instagram.com/p/ABC123/ https://x.com/alice/status/123'), 2000);
   assert.equal(Object.keys(s.manualRequests).length, 1);
   assert.equal(Object.keys(s.xRequests).length, 1);
-  assert.match(reply(s, 1).text, /X/);
+  assert.match(reply(s, 1).text, /已加入 2 個連結/);
+  assert.deepEqual(s.replies['reply:1'].manualJobs, ['x:100-1-0', '100-1-0']);
 });
 
 test('old settings remain compatible and X environment subscriptions import only on first initialization', t => {

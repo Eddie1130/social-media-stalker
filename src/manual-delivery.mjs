@@ -35,9 +35,15 @@ export class ManualDelivery {
     atomic(this.file, this.state);
     if (!fs.existsSync(this.file + '.required')) fs.writeFileSync(this.file + '.required', 'required', { flag: 'wx', mode: 0o600 });
   }
-  async drain(client, { stopping = () => false } = {}) {
+  async drain(client, { stopping = () => false, externalDone = () => false } = {}) {
     let ok = true;
-    for (const request of Object.values(this.settings().manualRequests || {}).sort((a,b) => a.at-b.at)) {
+    const requests = Object.values(this.settings().manualRequests || {}).sort((a,b) => a.at-b.at);
+    const batches = new Map();
+    const settings = this.settings();
+    for (const request of [...requests, ...Object.values(settings.xRequests || {}), ...Object.values(settings.tiktokRequests || {})]) {
+      for (const id of request.queueNotice?.jobs || []) batches.set(id, request);
+    }
+    for (const request of requests) {
       if (stopping()) break;
       if (!this.settings().allowedIds.includes(request.userId)) continue;
       let job;
@@ -104,8 +110,38 @@ export class ManualDelivery {
         catch (error) { if (!error.message.startsWith('TELEGRAM_')) throw error; entry.retryAt = Date.now()+30000; this.persist(); ok = false; continue; }
       }
       entry.done = true; this.persist(); this.log('MANUAL_DELIVERY_STATUS', { jobId: request.id, status: entry.uncertain ? 'uncertain' : entry.localError || job.status === 'failed' ? 'failed' : 'complete' });
+      const batch = batches.get(request.id);
+      if (batch) await this.updateNotice(client, batch, externalDone);
+    }
+    // A receipt can arrive after delivery, or a previous edit can need a retry.
+    for (const batch of new Set(batches.values())) {
+      if (stopping()) break;
+      await this.updateNotice(client, batch, externalDone);
     }
     return ok;
+  }
+  async updateNotice(client, batch, externalDone) {
+    if (!this.settings().allowedIds.includes(batch.userId)) return;
+    const { jobs, messageId } = batch.queueNotice;
+    const prior = this.state.jobs[jobs[0]];
+    if (prior?.noticeDone === jobs.length || prior?.noticeClosed) return;
+    const done = jobs.filter(id => id.includes(':') ? externalDone(id, batch.userId) : this.state.jobs[id]?.done).length;
+    if (!done) return;
+    const entry = this.state.jobs[jobs[0]] ||= { next: 0, failures: 0 };
+    if (entry.noticeDone === done || entry.noticeClosed || Date.now() < (entry.noticeRetryAt || 0)) return;
+    const body = { chat_id: batch.userId, message_id: messageId };
+    const finished = done === jobs.length;
+    try {
+      if (finished) await client.call('deleteMessage', body);
+      else await client.call('editMessageText', { ...body, text: `下載進度：已處理 ${done}/${jobs.length} 個連結。` });
+      entry.noticeDone = done;
+    } catch (error) {
+      if (!error.message.startsWith('TELEGRAM_')) throw error;
+      if (['TELEGRAM_ERROR_400', 'TELEGRAM_ERROR_403'].includes(error.message)) entry.noticeClosed = true;
+      else entry.noticeRetryAt = Date.now() + 30000;
+      this.log('MANUAL_NOTICE_UPDATE_FAILED', { jobId: batch.id, reason: error.message });
+    }
+    this.persist();
   }
   async upload(group, result, userId, documents, includeCaption = true) {
     const files = [], media = [];

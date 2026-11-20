@@ -46,6 +46,12 @@ export async function flushReplies(settingsSource,client,persist,{stopping=()=>f
           if (reply.replacesMessageId) delete panels[reply.replacesMessageId];
           panels[result.message_id] = reply.historyPanel;
         }
+        if (reply.manualJobs && Number.isSafeInteger(result?.message_id) && result.message_id > 0) {
+          const key = reply.manualJobs[0];
+          const first = key.startsWith('x:') ? s.xRequests?.[key.slice(2)]
+            : key.startsWith('tt:') ? s.tiktokRequests?.[key.slice(3)] : s.manualRequests?.[key];
+          if (first?.userId === reply.userId) first.queueNotice = { messageId: result.message_id, jobs: reply.manualJobs };
+        }
         if(reply.inputPrompt&&reply.method==='sendMessage'&&s.users?.[reply.userId]?.waiting===reply.inputPrompt&&Number.isSafeInteger(result?.message_id)&&result.message_id>0){const u=s.users[reply.userId];if(!u.waitingMessageId||u.waitingMessageId===reply.replacesMessageId)u.waitingMessageId=result.message_id;}
         delete s.replies[key];
       });

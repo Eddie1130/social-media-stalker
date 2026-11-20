@@ -11,6 +11,7 @@ import { ManualDelivery, albumPlan } from '../src/manual-delivery.mjs';
 import { manualPath } from '../src/manual-files.mjs';
 import { initializeSettings, settingsFile } from '../src/telegram-settings.mjs';
 import { applyUpdate } from '../src/telegram-menu.mjs';
+import { flushReplies } from '../src/telegram-replies.mjs';
 import { TelegramClient } from '../src/telegram-client.mjs';
 import { atomic } from '../src/error-monitor.mjs';
 import { installCatalogGuard } from '../src/catalog-api.mjs';
@@ -347,4 +348,49 @@ test('private URL input flows through real controller, priority worker and local
   const id='100-10-0';assert.equal(JSON.parse(fs.readFileSync(jobFile(f.stateDir,id))).status,'ready');
   const d=new ManualDelivery({root:f.root,dir:f.controlDir,stateDir:f.stateDir,settings:()=>saved}),methods=[];
   await d.drain({call:async(method,_body,opts)=>{opts?.beforeRequest?.();methods.push(method);return{message_id:1};}});assert.deepEqual(methods,['sendPhoto']);
+});
+
+test('manual queue notice tracks its batch through delivery and restart', async t => {
+  const f = fixture(t);
+  applyUpdate(f.settings, userMessage(10, 'https://instagram.com/p/ABC/ https://instagram.com/p/DEF/'));
+  const calls = [];
+  const client = { async call(method, body) { calls.push({ method, body }); return { message_id: 42 }; } };
+  await flushReplies(f.settings, client, async () => {});
+  assert.equal(calls[0].body.text, '已加入 2 個連結到下載佇列。完成後會回傳媒體，並保留本機原檔。');
+  assert.equal(calls[0].body.reply_markup, undefined);
+  for (const i of [1, 0]) {
+    const request = f.settings.manualRequests[`100-10-${i}`];
+    atomic(jobFile(f.stateDir, request.id), { ...request, version: 1, status: 'failed' });
+    const delivery = new ManualDelivery({ ...f, dir: f.controlDir, settings: () => f.settings });
+    await delivery.drain(client);
+  }
+  const updates = calls.filter(call => call.body.message_id === 42);
+  assert.deepEqual(updates.map(call => call.method), ['editMessageText', 'deleteMessage']);
+  assert.match(updates[0].body.text, /1\/2/);
+});
+
+test('one queue notice follows Instagram, X and TikTok even when request IDs coincide', async t => {
+  const f = fixture(t);
+  applyUpdate(f.settings, userMessage(12, 'https://x.com/alice/status/123 https://instagram.com/p/ABC/ https://www.tiktok.com/@alice/video/123'));
+  const calls = [];
+  const client = { async call(method, body) { calls.push({ method, body }); return { message_id: 72 }; } };
+  await flushReplies(f.settings, client, async () => {});
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].body.text, /已加入 3 個連結/);
+  assert.equal(calls[0].body.reply_markup, undefined);
+  const external = new Set();
+  const delivery = new ManualDelivery({ ...f, dir: f.controlDir, settings: () => f.settings });
+  const drain = () => delivery.drain(client, { externalDone: key => external.has(key) });
+  external.add('tt:100-12-0');
+  await drain();
+  const request = f.settings.manualRequests['100-12-0'];
+  atomic(jobFile(f.stateDir, request.id), { ...request, version: 1, status: 'failed' });
+  await drain();
+  external.add('x:100-12-0');
+  await drain();
+  await drain();
+  const updates = calls.filter(call => call.body.message_id === 72);
+  assert.deepEqual(updates.map(call => call.method), ['editMessageText', 'editMessageText', 'deleteMessage']);
+  assert.match(updates[0].body.text, /1\/3/);
+  assert.match(updates[1].body.text, /2\/3/);
 });

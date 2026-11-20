@@ -203,7 +203,12 @@ def finish_request(job, text=None):
 def merge_recipients(recipients, jobs):
     by_user = {r['userId']: r for r in recipients}
     for job in jobs:
-        by_user[job['userId']] = manual_recipient(job)
+        previous = by_user.get(job['userId'], {})
+        ids = previous.get('requestIds', [previous['requestId']] if previous.get('requestId') else [])
+        recipient = manual_recipient(job)
+        if any(rid != job['id'] for rid in ids):
+            recipient['requestIds'] = list(dict.fromkeys([*ids, job['id']]))
+        by_user[job['userId']] = recipient
     return list(by_user.values())
 
 

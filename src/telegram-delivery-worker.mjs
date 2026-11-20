@@ -56,7 +56,9 @@ async function run(){
    for(const row of rows){personal.ingest(row.event);fs.unlinkSync(row.file);}
    personal.daily(Date.now(),id=>describeUser(settings,id,config.stateDir,config.watchdogDir));
    return personal.drain(client,{stopping:()=>stopping});
-  }),loop('manual',async()=>{await manual.drain(client,{stopping:()=>stopping});return true;}),
+  }),loop('manual',async()=>{await manual.drain(client, { stopping: () => stopping,
+          externalDone: (key, userId) => key.startsWith('x:') ? x?.manualDone(key.slice(2), userId) : tt?.state.manualDone?.[key.slice(3)],
+        });return true;}),
   ...(x?[loop('x',()=>x.drain(client,{stopping:()=>stopping}))]:[]),
   ...['notice','video','content','story'].map(lane=>loop(lane,()=>tt.drain(client,{stopping:()=>stopping,lane})))
  ]);

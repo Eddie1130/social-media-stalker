@@ -96,6 +96,13 @@ export class XDelivery {
     const preference = sub?.notifications[event.kind];
     return mediaEnabled(user, event.at) && sub?.generation === recipient.generation && preference?.enabled === true && event.at >= sub.joinedAt && event.at >= preference.since;
   }
+  manualDone(id, userId) {
+    return ['manual:', 'manual-failed:'].some(prefix => {
+      const eventId = createHash('sha256').update(prefix + id).digest('hex');
+      const key = createHash('sha256').update(`${eventId}:${userId}`).digest('hex');
+      return this.state.receipts[key]?.done;
+    });
+  }
   async upload(group, result, userId, documents) {
     const { xFile } = await import('./x-archive.mjs');
     return ManualDelivery.prototype.upload.call({ root: this.root, fileResolver: xFile, probe: videoAttributes, preview: videoPreview }, group, result, userId, documents);

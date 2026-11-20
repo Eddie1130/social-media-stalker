@@ -7,7 +7,11 @@
 - Instagram、X、TikTok 完成歷史封存後，Telegram 帳號選單會移除一鍵回補按鈕，並顯示已封存。
 - 修正匯出將 Unicode 等價日文路徑及空白 caption.txt 誤報為缺失；Instagram 舊封存完成判斷改依掃描、媒體與說明狀態。
 
+- Telegram 手動下載支援 Instagram、X、TikTok 貼文與直播共用進度通知，整批交付後自動刪除。
+
 ## 2026-11-19
+
+- Telegram 手動下載 Instagram 連結時，入列通知不附返回按鈕；多連結共用進度訊息，整批處理完畢後自動刪除。
 
 - Telegram 接受 TikTok LIVE 分享短連結與直播網址，可單次錄影並回傳給提出要求的使用者；同一帳號共用錄影，離線時回覆結果。
 

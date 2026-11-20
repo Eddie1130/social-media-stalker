@@ -111,7 +111,20 @@ export class TikTokDelivery extends XDelivery {
         }
         if (entry.nextGroup === items.length) { entry.done = true; this.persist(); }
       }
-      if (event.recipients.every(r => this.state.receipts[createHash('sha256').update(`${name}:${r.userId}:${r.generation}`).digest('hex')]?.done)) fs.unlinkSync(path.join(dir, name));
+      if (event.recipients.every(r => this.state.receipts[createHash('sha256').update(`${name}:${r.userId}:${r.generation}`).digest('hex')]?.done)) {
+        if (event.kind !== 'start' && !event.noticeKey) {
+          for (const recipient of event.recipients) {
+            const ids = recipient.requestIds || [recipient.requestId || event.requestId];
+            for (const id of ids) {
+              if (id && this.settings().tiktokRequests?.[id]?.userId === recipient.userId) {
+                (this.state.manualDone ||= {})[id] = true;
+              }
+            }
+          }
+          if (event.requestId || event.recipients.some(r => r.requestId)) this.persist();
+        }
+        fs.unlinkSync(path.join(dir, name));
+      }
       } catch {
         ok = false;
         this.log('TIKTOK_DELIVERY_FAILED', { event: name, reason: 'TIKTOK_EVENT_OR_FILE_UNAVAILABLE' });

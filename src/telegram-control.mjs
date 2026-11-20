@@ -185,7 +185,9 @@ export async function run({ env = process.env, args = process.argv } = {}) {
     }
     async function manualDispatch() {
       do {
-        await manual.drain(client, { stopping: () => stopping });
+        await manual.drain(client, { stopping: () => stopping,
+          externalDone: (key, userId) => key.startsWith('x:') ? xDelivery?.manualDone(key.slice(2), userId) : ttDelivery?.state.manualDone?.[key.slice(3)],
+        });
         if (!args.includes('--once')) await wait(1000);
       } while (!stopping && !args.includes('--once'));
     }

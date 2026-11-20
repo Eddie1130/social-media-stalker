@@ -60,7 +60,7 @@ export function xCallback(settings, user, id, data, updateId, now, overview) {
   }
   return panel('此 X 選單已過期，請重新選擇。', [back]);
 }
-export function xMessage(settings, user, id, text, linkedText, updateId, now) {
+export function xMessage(settings, user, id, text, linkedText, updateId, now, manualJobs = []) {
   if (/^\/xadd(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
     const raw = text.replace(/^\/xadd(?:@[A-Za-z0-9_]+)?\s*/i, '');
     if (!raw) { user.waiting = 'x:add'; return panel('請傳送要監看的 X 使用者名稱。', [back]); }
@@ -84,13 +84,14 @@ export function xMessage(settings, user, id, text, linkedText, updateId, now) {
       settings.xRequests ||= {};
       for (let i = 0; i < posts.length; i++) {
         const requestId = `${id}-${updateId}-${i}`;
+        manualJobs.push('x:' + requestId);
         settings.xRequests[requestId] = { id: requestId, userId: id, type: 'manual', username: posts[i].username, url: posts[i].url, at: now };
       }
       delete user.waiting;
-      return panel([posts.length ? `已加入 ${posts.length} 個 X 連結到下載佇列，完成後回傳文字及媒體。` : '',
+      return panel([
         ...profiles.map(link => `是否將 X @${link.username} 加入你的監看清單？`),
-        invalid.length ? `${invalid.length} 個 X 連結不支援，請確認網址。` : ''].filter(Boolean).join('\n') || 'X 連結無法辨識。',
-      [...profiles.map(link => [button(`加入 X @${link.username}`, 'x:follow:' + link.username)]), back]);
+        invalid.length ? `${invalid.length} 個 X 連結不支援，請確認網址。` : ''].filter(Boolean).join('\n'),
+      [...profiles.map(link => [button(`加入 X @${link.username}`, 'x:follow:' + link.username)]), ...(profiles.length || invalid.length ? [back] : [])]);
     } catch { return panel('X 連結無法辨識，或超過每則訊息 10 個連結的限制。', [back]); }
   }
   if (user.waiting === 'x:add' && !text.startsWith('/')) return addTarget(user, text, now);

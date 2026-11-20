@@ -80,6 +80,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
   const messageId = callback?.message?.message_id || inputMessageId;
   if (messageId && user.historyPanels) delete user.historyPanels[messageId];
   let result;
+  const manualJobs = [];
   if (callback) {
     delete user.waiting; delete user.waitingMessageId;
     settings.replies[`ack:${update.update_id}`] = { method: 'answerCallbackQuery', body: { callback_query_id: callback.id }, userId: id, at: now };
@@ -139,12 +140,13 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
           const requestId = `${id}-${update.update_id}-${i}`;
           settings.tiktokRequests ||= {};
           settings.tiktokRequests[requestId] = { id: requestId, userId: id, url, at: now };
+          manualJobs.push('tt:' + requestId);
           count++;
         } catch {}
       }
-      ttResult = panel(`已加入 ${count} 個 TikTok 連結。${count < ttLinks.length ? '部分連結格式不支援。' : '直播會立即檢查並錄影，貼文會下載後回傳。'}`, [back]);
+      ttResult = panel(count < ttLinks.length ? '部分 TikTok 連結格式不支援。' : '', []);
     }
-    const xResult = totalLinks > 10 || /^\/(start|menu|cancel)(?:@[A-Za-z0-9_]+)?$/.test(text) ? undefined : xMessage(settings, user, id, text, linkedText, update.update_id, now);
+    const xResult = totalLinks > 10 || /^\/(start|menu|cancel)(?:@[A-Za-z0-9_]+)?$/.test(text) ? undefined : xMessage(settings, user, id, text, linkedText, update.update_id, now, manualJobs);
     if (totalLinks > 10) result = panel('每則訊息最多 10 個連結，請分批傳送。', [back]);
     else if (/^\/(start|menu|cancel)(?:@[A-Za-z0-9_]+)?$/.test(text)) { delete user.waiting; result = mainMenu(user); }
     else if (/^\/status$/.test(text)) result = panel(statusText(id), [[button('🔄 重新整理', 'status')], back]);
@@ -161,13 +163,13 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
         settings.manualRequests ||= {};
         for (let i = 0; i < content.length; i++) {
           const jobId = `${id}-${update.update_id}-${i}`;
+          manualJobs.push(jobId);
           settings.manualRequests[jobId] = { id: jobId, userId: id, url: content[i].url, at: now };
         }
         delete user.waiting;
-        result = panel([content.length ? `已加入 ${content.length} 個連結到下載佇列。完成後會回傳媒體，並保留本機原檔。` : '',
-          ...invalid.map(link => `第 ${link.index} 個連結不支援，請確認網址。`),
-          ...profiles.map(link => `是否將 @${link.username} 加入你的監看清單？`)].filter(Boolean).join('\n'),
-          [...profiles.map(link => [button(`加入 @${link.username}`, 'follow:' + link.username)]), ...(profiles.length ? [[button('取消', 'menu')]] : []), back]);
+        result = panel([...invalid.map(link => `第 ${link.index} 個連結不支援，請確認網址。`),
+          ...profiles.map(link => `是否將 @${link.username} 加入你的監看清單？`)].join('\n'),
+          [...profiles.map(link => [button(`加入 @${link.username}`, 'follow:' + link.username)]), ...(profiles.length ? [[button('取消', 'menu')]] : [])]);
       } catch (error) {
         result = panel(error.message === 'MANUAL_TOO_MANY_LINKS' ? '每則訊息最多 10 個連結，請分批傳送。' : '目前只接受 Instagram 貼文、Reel、Story、精選或帳號首頁連結，請確認網址。', [back]);
       }
@@ -211,6 +213,17 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
   }
   if (user.waiting && Number.isSafeInteger(messageId) && messageId > 0) user.waitingMessageId = messageId;
   else delete user.waitingMessageId;
+  if (manualJobs.length) {
+    const queueReply = {
+      method: 'sendMessage', userId: id, at: now, manualJobs,
+      body: { chat_id: id, text: `已加入 ${manualJobs.length} 個連結到下載佇列。完成後會回傳媒體，並保留本機原檔。` },
+    };
+    if (!result.text.trim()) {
+      settings.replies[`reply:${update.update_id}`] = queueReply;
+      return true;
+    }
+    settings.replies[`queue:${update.update_id}`] = queueReply;
+  }
   settings.replies[`reply:${update.update_id}`] = {
     method: Number.isSafeInteger(messageId) && messageId > 0 ? 'editMessageText' : 'sendMessage',
     body: { chat_id: id, ...(Number.isSafeInteger(messageId) && messageId > 0 ? { message_id: messageId } : {}), ...result }, userId: id, at: now, ...(historyPanel ? { historyPanel } : {}), ...(user.waiting ? { inputPrompt: user.waiting } : {}),
