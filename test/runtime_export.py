@@ -345,3 +345,30 @@ class ExportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ExportFalseMissingTest(unittest.TestCase):
+    def test_unicode_catalog_paths_and_empty_captions(self):
+        import unicodedata
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "downloads"
+            state = Path(tmp) / "state"
+            state.mkdir()
+            folder = root / "instagram/alice/highlight" / unicodedata.normalize("NFD", "01_イベント")
+            folder.mkdir(parents=True)
+            (folder / "001.jpg").write_bytes(b"image")
+            caption = root / "instagram/alice/posts/1/caption.txt"
+            caption.parent.mkdir(parents=True)
+            caption.write_bytes(b"")
+            atomic(state / "health.json", {"targets": [{"username": "alice", "target": "123"}]})
+            atomic(state / "catalog-123.json", {"assets": {"1": {
+                "archiveDone": True, "relativePath": "highlight/01_イベント/001.jpg",
+                "kind": "highlight", "parent": "456",
+            }}})
+            result = Snapshot(root, state, "ig", "alice").collect()
+            self.assertEqual(result["missing"], [])
+            self.assertEqual(len(result["files"]), 2)
+            self.assertIn(result["records"][0]["files"][0], {f["path"] for f in result["files"]})
+            with safe_open(root, result["records"][0]["files"][0]) as stream:
+                self.assertEqual(stream.read(), b"image")
+            (folder / "002.jpg").write_bytes(b"")
+            self.assertTrue(Snapshot(root, state, "ig", "alice").collect()["missing"])

@@ -1020,7 +1020,7 @@ class Catalog:
             stream = json.loads(data)
             targets.setdefault(name, {})[kind] = {
                 k: stream.get(k)
-                for k in ("phase", "failures", "reason", "baseline", "lastSuccess")
+                for k in ("phase", "failures", "reason", "baseline", "lastSuccess", "historyAt", "backfill")
             }
             report = targets[name][kind]
             report["consecutiveFailures"] = stream["failures"]

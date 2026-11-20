@@ -60,6 +60,22 @@ export function refreshQueuedDescriptions(delivery, settings, describe) {
   }
 }
 
+export function completedHistoryPanels(settings, describe) {
+  const edits = [];
+  for (const id of settings.allowedIds) {
+    const overviews = {};
+    for (const [messageId, panel] of Object.entries(settings.users[id]?.historyPanels || {})) {
+      const overview = overviews[panel.platform] ??= describe.platform(id, panel.platform);
+      if (!overview?.archived?.[panel.name]) continue;
+      const text = `✅ @${panel.name} 的歷史內容已封存。`;
+      const rows = panel.body.reply_markup.inline_keyboard.filter(row => !row.some(b => /^(?:(tt|x):)?history:/.test(b.callback_data)));
+      edits.push({ id, messageId, panel, body: { chat_id: id, message_id: Number(messageId),
+        text: panel.request ? text : panel.body.text + '\n' + text, reply_markup: { inline_keyboard: rows } } });
+    }
+  }
+  return edits;
+}
+
 export async function run({ env = process.env, args = process.argv } = {}) {
   const dir = env.IG_CONTROL_DIR || '/app/control', stateDir = env.IG_STATE_DIR || '/app/state';
   if (env.IG_TELEGRAM_CONTROL === '0') {
@@ -123,6 +139,20 @@ export async function run({ env = process.env, args = process.argv } = {}) {
             await transact(candidate=>{applyUpdate(candidate, update, Date.now(), describe, env.ARCHIVE_EXPORT_ENABLED === '1' && exportServiceReady(env.EXPORT_DIR || '/exports'),
               platform => exportAccountNames(candidate, platform, { root: env.IG_ARCHIVE_DIR || '/downloads', stateDir }));});
           }
+          const edits = completedHistoryPanels(settings, describe);
+          if (edits.length) await transact(candidate => {
+            for (const { id, messageId, panel, body } of edits) {
+              const panels = candidate.users[id]?.historyPanels;
+              if (JSON.stringify(panels?.[messageId]) !== JSON.stringify(panel)) continue;
+              const sub = candidate.users[id][{ig:'targets', tt:'tiktokTargets', x:'xTargets'}[panel.platform]]?.[panel.name];
+              if (sub) {
+                sub.archivedHistory ||= {};
+                sub.archivedHistory[panel.platform === 'tt' && sub.notifications?.like?.enabled ? 'likes' : 'default'] = true;
+              }
+              delete panels[messageId];
+              candidate.replies[`archived:${id}:${messageId}`] = { method: 'editMessageText', userId: id, at: Date.now(), body };
+            }
+          });
           lastPollAt = Date.now(); pollOk = true;
         } catch (error) {
           if (stopping) return;

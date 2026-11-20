@@ -10,6 +10,7 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
   const live = platform === 'tt' ? read(path.join(stateDir, 'tiktok/health.json'), null) : null;
   const fresh = h => h && Number.isFinite(h.at) && Math.abs(now - h.at) <= 120000 && !['stopped', 'fatal'].includes(h.phase);
   const history = platform === 'x' ? xHistoryReports(user, settings, id, stateDir, read, health) : [];
+  const archived = Object.create(null);
   const accounts = {}, backfills = {}, accountPending = {}, progress = {}; let pending = 0;
   for (const name of names) {
     const before = pending;
@@ -23,6 +24,9 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
       const catalog = read(path.join(stateDir, `catalog-${target.target}.json`), null);
       const assets = Object.values(catalog?.assets || {}), remaining = assets.filter(a => !a?.archiveDone).length;
       pending += remaining;
+      archived[name] = catalog?.posts?.baseline === true && catalog.highlights?.baseline === true &&
+        !catalog.posts.backfill && !catalog.highlights.backfill && !remaining &&
+        Object.values(catalog.captions || {}).every(c => c.savedHash === c.hash);
       scanKnown = typeof catalog?.posts?.baseline === 'boolean' && typeof catalog?.highlights?.baseline === 'boolean';
       searching = scanKnown && (!catalog.posts.baseline || !catalog.highlights.baseline);
       routineScan = scanKnown && !searching && (!!catalog.posts.cursor || !!catalog.highlights.todo?.length);
@@ -52,6 +56,13 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
     }
     if (platform === 'tt') {
       const states = Object.values(target || {});
+      const kinds = ['post', 'repost', 'story', 'profile'];
+      if (sub.notifications?.like?.enabled) kinds.push('like');
+      archived[name] = kinds.every(kind => {
+        const stream = target?.[kind];
+        return stream?.baseline === true && stream.backfill === false &&
+          (stream.historyAt > 0 || sub.monitorOnly !== true) && !stream.pending && !stream.unresolved;
+      });
       scanKnown = states.length > 0 && states.every(item => typeof item?.baseline === 'boolean');
       searching = states.some(item => item?.baseline === false || /分頁|搜尋/.test(item?.phase || ''));
       scanBlocked = states.some(item => item?.unresolved || item?.failures || item?.consecutiveFailures || item?.reason);
@@ -75,5 +86,14 @@ export function platformStatus(user, platform, stateDir, read, now = Date.now(),
     accounts[name] = `${icon} @${name} · ${state}${muted ? ' · 🔕' : ''}`;
   }
   const text = [`${config.title}｜${names.length} 個帳號`, ...(names.length ? names.map(name => [accounts[name], progress[name], ...(accountPending[name] > 0 ? [`待下載：${accountPending[name]}`] : [])].join('\n')) : ['尚未新增帳號。']), ...(pending > 0 ? [`待下載總數：${pending}`] : [])].join('\n');
-  return { accounts, backfills, accountPending, progress, pending, text, history };
+  if (platform === 'x') {
+    for (const request of Object.values(settings.xRequests || {})) {
+      if (request.type !== 'history' || request.start || request.end || !names.includes(request.username) ||
+          archived[request.username] || !/^\d{1,20}-\d{1,16}-\d{1,2}$/.test(request.id)) continue;
+      const job = read(path.join(stateDir, 'x/jobs', request.id + '.json'), null);
+      if (job?.username === request.username && job.status === 'complete' && job.reported === true)
+        archived[request.username] = true;
+    }
+  }
+  return { archived, accounts, backfills, accountPending, progress, pending, text, history };
 }

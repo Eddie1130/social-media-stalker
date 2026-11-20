@@ -41,6 +41,11 @@ export async function flushReplies(settingsSource,client,persist,{stopping=()=>f
       }
       if(reply.method==='answerCallbackQuery')acknowledgements.add(key);
       else await commit(s=>{
+        if (reply.historyPanel && reply.method === 'sendMessage' && Number.isSafeInteger(result?.message_id)) {
+          const panels = s.users[reply.userId].historyPanels ||= {};
+          if (reply.replacesMessageId) delete panels[reply.replacesMessageId];
+          panels[result.message_id] = reply.historyPanel;
+        }
         if(reply.inputPrompt&&reply.method==='sendMessage'&&s.users?.[reply.userId]?.waiting===reply.inputPrompt&&Number.isSafeInteger(result?.message_id)&&result.message_id>0){const u=s.users[reply.userId];if(!u.waitingMessageId||u.waitingMessageId===reply.replacesMessageId)u.waitingMessageId=result.message_id;}
         delete s.replies[key];
       });

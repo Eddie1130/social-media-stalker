@@ -7,6 +7,7 @@ import re
 import sqlite3
 import stat
 import time
+import unicodedata
 from urllib.parse import urlsplit
 
 MAPS = {"ig": "targets", "x": "xTargets", "tt": "tiktokTargets"}
@@ -99,6 +100,11 @@ class Snapshot:
 
     def add(self, relative, expected=False):
         relative = str(relative)
+        if expected and relative not in self.files:
+            normalized = unicodedata.normalize("NFC", relative)
+            matches = [name for name in self.files if unicodedata.normalize("NFC", name) == normalized]
+            if len(matches) == 1:
+                return matches[0]
         if not any(relative.startswith(prefix + "/") for prefix in self.account_roots):
             raise ValueError("UNSAFE_ACCOUNT_PATH")
         if Path(relative).suffix.lower() not in MEDIA and Path(relative).name != "caption.txt" and not (self.platform == "x" and re.search(r"/posts/\d+\.txt$", relative)):
@@ -108,11 +114,12 @@ class Snapshot:
         try:
             with safe_open(self.root, relative) as stream:
                 info = os.fstat(stream.fileno())
-            if not info.st_size:
+            if not info.st_size and Path(relative).name != "caption.txt":
                 raise ValueError("EMPTY_FILE")
             if max(info.st_mtime_ns, info.st_ctime_ns) > self.cutoff:
                 return  # Completed/updated after this snapshot began.
             self.files[relative] = {"path": relative, "size": info.st_size, "dev": info.st_dev, "ino": info.st_ino, "mtime": info.st_mtime_ns}
+            return relative
         except (OSError, ValueError):
             if expected or relative not in self.missing:
                 self.missing.append(relative)
@@ -162,7 +169,7 @@ class Snapshot:
         for asset in catalog.get("assets", {}).values():
             if asset.get("archiveDone") and asset.get("relativePath"):
                 relative = base + "/" + asset["relativePath"]
-                self.add(relative, True)
+                relative = self.add(relative, True) or relative
                 code = asset.get("code")
                 url = f"https://www.instagram.com/p/{code}/" if code and re.fullmatch(r"[A-Za-z0-9_-]+", code) else None
                 if asset.get("kind") == "highlight":

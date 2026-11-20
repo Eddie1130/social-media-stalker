@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-20
+
+- Instagram、X、TikTok 完成歷史封存後，Telegram 帳號選單會移除一鍵回補按鈕，並顯示已封存。
+- 修正匯出將 Unicode 等價日文路徑及空白 caption.txt 誤報為缺失；Instagram 舊封存完成判斷改依掃描、媒體與說明狀態。
+
 ## 2026-11-19
 
 - Telegram 接受 TikTok LIVE 分享短連結與直播網址，可單次錄影並回傳給提出要求的使用者；同一帳號共用錄影，離線時回覆結果。

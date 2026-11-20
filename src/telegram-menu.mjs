@@ -59,7 +59,26 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
   const user = settings.users[id];
   if (!user) return true;
   const inputMessageId = user.waitingMessageId;
-  const overview = platform => statusText.platform?.(id, platform);
+  const overviews = {};
+  const overview = platform => overviews[platform] ??= statusText.platform?.(id, platform);
+  const isArchived = (platform, name) => {
+    const sub = user[{ig:'targets', tt:'tiktokTargets', x:'xTargets'}[platform]]?.[name];
+    if (!sub) return false;
+    const scope = platform === 'tt' && sub.notifications?.like?.enabled ? 'likes' : 'default';
+    if (overview(platform)?.archived?.[name]) {
+      sub.archivedHistory ||= {};
+      sub.archivedHistory[scope] = true;
+    }
+    return sub.archivedHistory?.[scope] === true;
+  };
+  const historyAction = /^(?:(tt|x):)?history:([^:]+):([^:]+)$/.exec(callback?.data || '');
+  const historyPlatform = historyAction?.[1] || 'ig';
+  const historyName = historyAction?.[2];
+  const historySub = historyAction && user[{ig:'targets', tt:'tiktokTargets', x:'xTargets'}[historyPlatform]]?.[historyName];
+  const validHistory = historyAction && historySub?.generation?.slice(0, 8) === historyAction[3];
+  const archivedText = name => `✅ @${name} 的歷史內容已封存。`;
+  const messageId = callback?.message?.message_id || inputMessageId;
+  if (messageId && user.historyPanels) delete user.historyPanels[messageId];
   let result;
   if (callback) {
     delete user.waiting; delete user.waitingMessageId;
@@ -67,6 +86,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
     const parts = String(callback.data || '').split(':');
     const [action, name, kind, value, generation] = parts;
     if (id !== settings.ownerId && /^(notifications|media|daily|set|tt:set|x:set)(:|$)/.test(callback.data)) result = mainMenu(user);
+    else if (validHistory && isArchived(historyPlatform, historyName)) result = panel(archivedText(historyName), [back]);
     else if (action === 'history' && validUsername(name) && userTarget(user, name)?.generation.slice(0, 8) === kind) {
       userTarget(user, name).historyAt = now;
       result = panel(`已申請 @${name} 的貼文與精選歷史回補。`, [back]);
@@ -172,12 +192,28 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
       .map(row => row.filter(b => !/^(notifications|set:|tt:set:|x:set:)/.test(b.callback_data)))
       .filter(row => row.length);
   }
-  const messageId = callback?.message?.message_id || inputMessageId;
+  let watched = validHistory ? { platform: historyPlatform, name: historyName } : null;
+  const rows = result.reply_markup?.inline_keyboard || [];
+  for (const row of rows) {
+    const match = /^(?:(tt|x):)?history:([^:]+):/.exec(row[0]?.callback_data);
+    if (!match) continue;
+    const platform = match[1] || 'ig', name = match[2];
+    if (isArchived(platform, name)) {
+      result.reply_markup.inline_keyboard = rows.filter(item => item !== row);
+      result.text += '\n' + archivedText(name);
+    } else watched = { platform, name };
+    break;
+  }
+  const historyPanel = watched && !isArchived(watched.platform, watched.name) ? { ...watched, body: result, request: !!validHistory } : null;
+  if (historyPanel && Number.isSafeInteger(messageId) && messageId > 0) {
+    user.historyPanels ||= {};
+    user.historyPanels[messageId] = historyPanel;
+  }
   if (user.waiting && Number.isSafeInteger(messageId) && messageId > 0) user.waitingMessageId = messageId;
   else delete user.waitingMessageId;
   settings.replies[`reply:${update.update_id}`] = {
     method: Number.isSafeInteger(messageId) && messageId > 0 ? 'editMessageText' : 'sendMessage',
-    body: { chat_id: id, ...(Number.isSafeInteger(messageId) && messageId > 0 ? { message_id: messageId } : {}), ...result }, userId: id, at: now, ...(user.waiting ? { inputPrompt: user.waiting } : {}),
+    body: { chat_id: id, ...(Number.isSafeInteger(messageId) && messageId > 0 ? { message_id: messageId } : {}), ...result }, userId: id, at: now, ...(historyPanel ? { historyPanel } : {}), ...(user.waiting ? { inputPrompt: user.waiting } : {}),
   };
   return true;
 }
