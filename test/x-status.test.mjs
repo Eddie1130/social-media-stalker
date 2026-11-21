@@ -14,10 +14,10 @@ const archiveJob = () => ({ username: 'alice', status: 'complete', phase: 'archi
 
 test('archive ETA stays fixed between progress updates and changes with new progress', () => {
   const record = archiveJob();
-  assert.match(simpleXHistory(record, now), /2026\/11\/13 18:10:00/);
+  assert.match(simpleXHistory(record, now), /2026\/11\/13\s18:10:00/);
   assert.equal(simpleXHistory(record, now + 60000), simpleXHistory(record, now));
   const advanced = { ...record, progressUpdatedAt: now + 60000, archive: { ...record.archive, done: 75 } };
-  assert.match(simpleXHistory(advanced, now + 60000), /2026\/11\/13 18:04:40/);
+  assert.match(simpleXHistory(advanced, now + 60000), /2026\/11\/13\s18:04:40/);
 });
 
 test('archive ETA becomes unavailable for stale progress or an elapsed prediction', () => {
