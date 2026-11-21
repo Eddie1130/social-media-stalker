@@ -51,12 +51,12 @@ IG／X 不經這個 VPN。Local Bot API 透過內部 Compose 網路存取，沒�
 
 ```sh
 ./igctl config --quiet
-./igctl build ig-watch ig-watchdog ig-telegram tiktok-watch tiktok-browser-resolver
+./igctl build ig-watch ig-watchdog stalker-telegram tiktok-watch tiktok-browser-resolver
 # 暫停會使用 bot 的現有服務，再對 Telegram 雲端登出一次。
-./igctl stop ig-watch ig-watchdog ig-telegram
+./igctl stop ig-watch ig-watchdog stalker-telegram
 node scripts/migrate-telegram-local.mjs
 # 僅在登出成功後繼續。
-./igctl up -d telegram-bot-api tiktok-vpn tiktok-browser-resolver tiktok-watch ig-telegram ig-watch ig-watchdog x-watch
+./igctl up -d telegram-bot-api tiktok-vpn tiktok-browser-resolver tiktok-watch stalker-telegram ig-watch ig-watchdog x-watch
 ./igctl ps
 ```
 
@@ -133,8 +133,8 @@ python3 tiktok/archive_links.py --root downloads --report /tmp/tiktok-links-appl
 
 ```sh
 ./igctl config --quiet
-./igctl build tiktok-catalog ig-telegram
-./igctl up -d tiktok-vpn tiktok-browser-resolver tiktok-watch tiktok-catalog ig-telegram
+./igctl build tiktok-catalog stalker-telegram
+./igctl up -d tiktok-vpn tiktok-browser-resolver tiktok-watch tiktok-catalog stalker-telegram
 ./igctl ps
 ```
 

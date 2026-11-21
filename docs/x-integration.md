@@ -7,9 +7,9 @@ X 功能直接整合於現有 Node.js／Docker 架構，不需要 n8n 或額外�
 保留並備份既有 `data/`、`downloads/`、`.env` 及 `.env.telegram`。新增設定皆有預設值，不需改寫現有登入資料：
 
 ```sh
-./igctl build x-watch ig-telegram
-./igctl up -d --force-recreate ig-telegram x-watch
-./igctl logs -f x-watch ig-telegram
+./igctl build x-watch stalker-telegram
+./igctl up -d --force-recreate stalker-telegram x-watch
+./igctl logs -f x-watch stalker-telegram
 ```
 
 上述命令只升級 Telegram 並啟動 X worker；既有 IG 服務可繼續執行。完整部署可使用 `./igctl up -d`。`igctl` 現在會同時載入 `compose.x.yml`。
@@ -27,7 +27,7 @@ X 功能直接整合於現有 Node.js／Docker 架構，不需要 n8n 或額外�
 | `X_NODE_OPTIONS` | `--max-old-space-size=384` | 限制 Node 的舊世代 heap，為原生記憶體及 Python 保留空間 |
 | `IG_DOWNLOAD_DIR` | `./downloads` | IG 與 X 共用的主機下載根目錄 |
 
-修改 `.env` 後以 `./igctl up -d --force-recreate x-watch ig-telegram` 套用。X worker 使用只讀 Telegram 設定掛載，Telegram 控制服務使用只讀下載掛載；只有 X worker 操作 X 封存與帳號池。
+修改 `.env` 後以 `./igctl up -d --force-recreate x-watch stalker-telegram` 套用。X worker 使用只讀 Telegram 設定掛載，Telegram 控制服務使用只讀下載掛載；只有 X worker 操作 X 封存與帳號池。
 
 X 功能需要 `IG_TELEGRAM_CONTROL=1`（既有預設值）。若使用 `IG_TELEGRAM_CONTROL=0` 的 IG 舊模式，X worker 會保持停用，不讀取或建立訂閱設定。
 

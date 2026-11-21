@@ -152,13 +152,13 @@ The owner is `TELEGRAM_OWNER_USER_ID`, or the positive private-user
 `TELEGRAM_CHAT_ID` when the owner variable is omitted. If the old destination is a
 group (negative chat ID), explicitly configure the owner's **numeric user ID**.
 Add other approved IDs to `TELEGRAM_ALLOWED_USER_IDS=123456789,987654321` in
-`.env.telegram`, then recreate **ig-telegram**. Each user must start the bot privately
+`.env.telegram`, then recreate **stalker-telegram**. Each user must start the bot privately
 before it can send them messages. Group messages and callbacks, unknown users, and
 callbacks whose private chat does not match the sender are ignored. The owner is
 always approved. Revoked users retain saved history but stop receiving messages and
 stop contributing targets to the active watch list.
 
-On first startup, `ig-telegram` imports the environment's target list into the owner's
+On first startup, `stalker-telegram` imports the environment's target list into the owner's
 settings and migrates acknowledged Story IDs. New users start with an empty list.
 It persists choices under `data/control/`; changes reach the worker at its next
 settings refresh (normally within five seconds when idle, or after the current cycle).
@@ -186,7 +186,7 @@ alerts through the control service; if that service or its polling heartbeat fai
 it sends a separate direct fallback warning, with technical instructions only for the owner. A blocked recipient does not prevent
 other users from receiving replies or fallback alerts.
 
-Only **one** `ig-telegram` instance may poll a given bot token. An existing webhook
+Only **one** `stalker-telegram` instance may poll a given bot token. An existing webhook
 is reported as a configuration error, never deleted automatically. A Telegram 429
 cooldown is persisted and shared between normal menu/media requests. The independent
 watchdog fallback has its own persisted cooldown. The bot uses the official
@@ -195,7 +195,7 @@ watchdog fallback has its own persisted cooldown. The bot uses the official
 To enable this feature on an existing deployment:
 
 ```sh
-./igctl up -d --build --force-recreate ig-watch ig-watchdog ig-telegram
+./igctl up -d --build --force-recreate ig-watch ig-watchdog stalker-telegram
 ```
 
 Compose enables `IG_TELEGRAM_CONTROL=1` by default. Set it to `0` in `.env` and
@@ -291,5 +291,5 @@ After upgrading, recreate the services so that FFmpeg and the read-only download
 mount are present:
 
 ```sh
-./igctl up -d --build --force-recreate ig-watch ig-telegram ig-watchdog
+./igctl up -d --build --force-recreate ig-watch stalker-telegram ig-watchdog
 ```

@@ -21,7 +21,7 @@ services:
       IG_TELEGRAM_CONTROL: ${IG_TELEGRAM_CONTROL:-1}
       IG_STATE_DIR: /app/state
     depends_on:
-      ig-telegram:
+      stalker-telegram:
         condition: service_healthy
     volumes:
       - ./src:/app/src:ro
@@ -42,7 +42,7 @@ services:
       options:
         max-size: "5m"
         max-file: "3"
-  ig-telegram:
+  stalker-telegram:
     environment:
       X_ENABLED: ${X_ENABLED:-1}
       X_TARGET_USERNAMES: ${X_TARGET_USERNAMES:-}

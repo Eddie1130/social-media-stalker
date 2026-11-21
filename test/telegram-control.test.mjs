@@ -11,7 +11,7 @@ import { atomic } from '../src/error-monitor.mjs';
 import { main } from '../src/watch-media.mjs';
 
 function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ig-telegram-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stalker-telegram-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const control = path.join(dir, 'control'), state = path.join(dir, 'state'), root = path.join(dir, 'downloads');
   fs.mkdirSync(state); fs.mkdirSync(root);
@@ -455,9 +455,9 @@ test('watchdog fallback keeps container instructions private to owner', async ()
   const sent = [];
   await sendControlFallback({ recipients: ['100', '200'], ownerId: '100', state: {}, token: 'test', signal: new AbortController().signal, persist() {}, log() {},
     fetchImpl: async (_, request) => { sent.push(JSON.parse(request.body)); return { ok: true, json: async () => ({ ok: true }) }; } });
-  assert.match(sent[0].text, /ig-telegram/);
+  assert.match(sent[0].text, /stalker-telegram/);
   assert.match(sent[1].text, /聯絡管理員/);
-  assert.doesNotMatch(sent[1].text, /watchdog|ig-telegram|容器/);
+  assert.doesNotMatch(sent[1].text, /watchdog|stalker-telegram|容器/);
 });
 
 test('status and daily-summary description hide shared incident details from other users', async t => {

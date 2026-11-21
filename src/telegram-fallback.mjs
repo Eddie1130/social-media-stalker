@@ -17,7 +17,7 @@ export async function sendControlFallback({ recipients, ownerId, state, token, s
       const response = await fetchImpl(`${telegramApiBase()}/bot${token}/sendMessage`, {
         method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: id, text: id === ownerId ? 'IG Telegram 控制服務已失聯，選單與通知可能暫停。獨立 watchdog 仍在運作，請檢查 ig-telegram 容器。' : serviceUnavailableText }),
+        body: JSON.stringify({ chat_id: id, text: id === ownerId ? 'Telegram 控制服務已失聯，選單與通知可能暫停。獨立 watchdog 仍在運作，請檢查 stalker-telegram 容器。' : serviceUnavailableText }),
       });
       const data = await response.json();
       accepted = response.ok && data.ok === true;

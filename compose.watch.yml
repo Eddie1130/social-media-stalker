@@ -34,7 +34,7 @@ services:
       IG_POSTS_DOC_ID: ${IG_POSTS_DOC_ID:-28322872020710458}
       IG_POSTS_PAGE_DOC_ID: ${IG_POSTS_PAGE_DOC_ID:-39535953862670189}
     depends_on:
-      ig-telegram:
+      stalker-telegram:
         condition: service_healthy
     volumes:
       - ${IG_DATA_DIR:-./data}/profile:/data/profile
@@ -58,7 +58,7 @@ services:
         max-size: "5m"
         max-file: "3"
 
-  ig-telegram:
+  stalker-telegram:
     build:
       context: .
       dockerfile: Dockerfile.telegram

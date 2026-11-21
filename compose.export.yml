@@ -54,7 +54,7 @@ services:
         max-size: "5m"
         max-file: "3"
 
-  ig-telegram:
+  stalker-telegram:
     environment:
       ARCHIVE_EXPORT_ENABLED: ${ARCHIVE_EXPORT_ENABLED:-0}
       EXPORT_DIR: /exports

@@ -52,8 +52,8 @@ CLOUDFLARE_TUNNEL_TOKEN_FILE=./data/cloudflare/tunnel-token
 5. 啟動 tunnel 並重新建立 Telegram controller，以掛載匯出狀態與啟用選單：
 
 ```sh
-./igctl --profile archive-export --profile archive-tunnel up -d --no-deps archive-tunnel ig-telegram
-./igctl --profile archive-export --profile archive-tunnel ps archive-export archive-tunnel ig-telegram
+./igctl --profile archive-export --profile archive-tunnel up -d --no-deps archive-tunnel stalker-telegram
+./igctl --profile archive-export --profile archive-tunnel ps archive-export archive-tunnel stalker-telegram
 ```
 
 匯出容器不映射任何主機埠，只有同 Docker network 的 `cloudflared` 存取 HTTP 8090；外部使用 Cloudflare 提供的 HTTPS。沒有路由器入站開埠。HTTP 服務只接受 `/files/<43字元隨機token>`，不提供瀏覽／管理介面。
@@ -82,4 +82,4 @@ npm run test:export
 
 損壞／缺失的設定不授予下載權限；有 `.required` 而遺失匯出狀態時拒絕啟動。匯出回覆讀取失敗不會停止其他平台的 Telegram 工作。檔案路徑以 directory descriptors 及 `O_NOFOLLOW` 開啟，拒絕路徑穿越、symlink 與跨帳號路徑。最多同時處理八個 HTTP 連線，每個連線的 socket timeout 為 60 秒；持續有資料傳輸可以更久。
 
-停用時先設 `ARCHIVE_EXPORT_ENABLED=0`、重新建立 `ig-telegram`，再停止 `archive-tunnel archive-export`。不要刪除原始封存來清理匯出；移除暫存狀態前需停止匯出服務並確認沒有使用中的連結。
+停用時先設 `ARCHIVE_EXPORT_ENABLED=0`、重新建立 `stalker-telegram`，再停止 `archive-tunnel archive-export`。不要刪除原始封存來清理匯出；移除暫存狀態前需停止匯出服務並確認沒有使用中的連結。

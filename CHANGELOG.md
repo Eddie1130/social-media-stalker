@@ -2,6 +2,8 @@
 
 ## 2026-11-21
 
+- 將共用 Telegram Bot 的 Compose 服務改名為 `stalker-telegram`，同步更新相依服務、維運指令及備援通知。
+
 ### Telegram 媒體通知
 
 - 統一 Instagram Story、Instagram Post、X 貼文／回覆／轉發／引用及 TikTok 貼文／轉發的通知開頭。依序顯示帳號、方括號類型與可用的媒體 ID、JST 發佈時間，再接內容。轉發時間缺失時顯示「發佈時間未知」，並在內容區保留原作者與原文時間。

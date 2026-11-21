@@ -41,7 +41,7 @@ Instagram 首次貼文／精選掃描會安靜下載可存取歷史，之後的�
 ```mermaid
 flowchart TD
     chat["Telegram 私人聊天"] <-->|"指令、通知與媒體"| api["telegram-bot-api<br/>Local Bot API"]
-    api <-->|"接收更新與傳送訊息"| bot["ig-telegram<br/>驗證使用者、處理指令與配送"]
+    api <-->|"接收更新與傳送訊息"| bot["stalker-telegram<br/>驗證使用者、處理指令與配送"]
     bot -->|"保存訂閱、通知設定、下載與回補申請"| control["data/control/<br/>個人設定、操作申請與配送收據"]
     control -->|"讀取訂閱與操作申請"| workers
 
@@ -57,7 +57,7 @@ flowchart TD
     media -->|"讀取要傳送的檔案"| bot
 ```
 
-以一則新的 Instagram Story 為例，`ig-watch` 依訂閱清單掃描帳號，先封存媒體，再記錄配送事件。`ig-telegram` 依各訂閱者的通知設定傳送檔案，並保存個人配送收據。關閉通知後，平台 worker 仍會繼續封存已訂閱帳號的內容。
+以一則新的 Instagram Story 為例，`ig-watch` 依訂閱清單掃描帳號，先封存媒體，再記錄配送事件。`stalker-telegram` 依各訂閱者的通知設定傳送檔案，並保存個人配送收據。關閉通知後，平台 worker 仍會繼續封存已訂閱帳號的內容。
 
 `ig-watchdog` 另行檢查 Instagram 監控狀態，異常時將告警交給 Bot。啟用選用的 ZIP 匯出後，`archive-export` 從既有封存建立 ZIP，Bot 回傳有效期 24 小時的 HTTPS 連結，使用者透過 `archive-tunnel` 下載。詳見 [封存匯出說明](docs/archive-export.md)。
 
@@ -142,9 +142,9 @@ docker compose run --rm ig-check node /app/src/guard-selftest.mjs
 
 ```sh
 ./igctl up -d telegram-bot-api
-./igctl build ig-watch ig-watchdog ig-telegram
+./igctl build ig-watch ig-watchdog stalker-telegram
 ./igctl run --rm ig-watch node /app/src/watch-media.mjs --test-telegram
-./igctl up -d ig-telegram ig-watchdog
+./igctl up -d stalker-telegram ig-watchdog
 ```
 
 測試只傳送文字，不會擷取或傳送 Story。它使用 `TELEGRAM_CHAT_ID`；正常私人選單配送則使用各核准使用者的私人聊天。
@@ -177,7 +177,7 @@ docker compose run --rm ig-check node /app/src/guard-selftest.mjs
 
 ```sh
 ./igctl ps
-./igctl logs -f ig-watch ig-watchdog ig-telegram
+./igctl logs -f ig-watch ig-watchdog stalker-telegram
 ```
 
 在 Bot 的私人聊天傳送 `/start` 或 `/menu`，以 `/status` 查看自己的訂閱與狀態。查看其他平台日誌時，將服務名稱換成 `x-watch`、`tiktok-watch` 或 `tiktok-catalog`。
@@ -206,7 +206,7 @@ docker compose run --rm ig-check node /app/src/guard-selftest.mjs
 
 異常通知在恢復後自動刪除，不另發恢復訊息。這需要保存 Telegram 訊息 ID；升級前未保存 ID 的舊通知，以及 Telegram 已不允許刪除的訊息，無法保證自動清除。
 
-擁有者由 `TELEGRAM_OWNER_USER_ID` 指定，未設定時使用正數 `TELEGRAM_CHAT_ID`。其他核准使用者填入 `.env.telegram` 的 `TELEGRAM_ALLOWED_USER_IDS`，修改後重新建立 `ig-telegram`。擁有者永遠在核准名單內；群組訊息與未核准使用者會被忽略。
+擁有者由 `TELEGRAM_OWNER_USER_ID` 指定，未設定時使用正數 `TELEGRAM_CHAT_ID`。其他核准使用者填入 `.env.telegram` 的 `TELEGRAM_ALLOWED_USER_IDS`，修改後重新建立 `stalker-telegram`。擁有者永遠在核准名單內；群組訊息與未核准使用者會被忽略。
 
 初次啟動會把環境變數中的 Instagram 訂閱匯入擁有者設定。之後請透過 Telegram 管理，修改 `.env` 不會覆寫已儲存的選擇；新使用者從空清單開始。設定保存在 `data/control/`，重啟不會清除。
 
@@ -245,7 +245,7 @@ TikTok 支援 `/@帳號/video/ID`、`/@帳號/photo/ID` 與 `vm.tiktok.com`、`v
 修改容器設定後，重新建立對應服務，例如：
 
 ```sh
-./igctl up -d --force-recreate ig-watch ig-telegram
+./igctl up -d --force-recreate ig-watch stalker-telegram
 ```
 
 ## 封存與資料目錄
@@ -286,10 +286,10 @@ ZIP 匯出只處理當時的本機封存，不代表來源平台歷史已完整�
 ```sh
 # 查看服務／追蹤日誌
 ./igctl ps
-./igctl logs -f ig-watch ig-watchdog ig-telegram
+./igctl logs -f ig-watch ig-watchdog stalker-telegram
 
 # 重新建置並建立更新後的服務
-./igctl up -d --build --force-recreate ig-watch ig-watchdog ig-telegram
+./igctl up -d --build --force-recreate ig-watch ig-watchdog stalker-telegram
 
 # 停止整套服務，保留 named volumes
 ./igctl down
@@ -328,7 +328,7 @@ docker compose run --rm -e IG_TARGET_USERNAME=alice -e IG_TARGET_USER_ID= -e IG_
 | `SESSION_INVALID` | 停止 `ig-watch`，重新執行登入步驟，完成後檢查 session 並啟動 watcher |
 | `BOOTSTRAP_TOKEN_ERROR`、GraphQL／schema 錯誤 | 查看日誌；Instagram 頁面或私有 API 可能已變更，必要時調整查詢 ID，避免反覆強制重試 |
 | Telegram 測試失敗 | 檢查 `.env.telegram` 的 token、chat ID，以及使用者是否已向 Bot 傳送訊息；確認 Local Bot API 設定及遷移已完成 |
-| Bot 不回應 | 確認使用私人聊天、數字使用者 ID 在白名單、`ig-telegram` 健康，且沒有其他 poller 或既有 webhook |
+| Bot 不回應 | 確認使用私人聊天、數字使用者 ID 在白名單、`stalker-telegram` 健康，且沒有其他 poller 或既有 webhook |
 | X 回補一直等待 | 啟動 `x-watch`；再確認有效的 `accounts.db` 與 X 指南中的狀態命令 |
 | TikTok 403／CAPTCHA | 依 TikTok 指南檢查 VPN、cookies 與互動登入；catalog 與登入容器不可同時使用共用 profile |
 | noVNC 無法連線 | 檢查綁定位址、連接埠、防火牆及 `logs/`；遠端使用 SSH tunnel |
