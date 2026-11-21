@@ -118,13 +118,23 @@ class TikTokWorkerTests(unittest.TestCase):
         self.assertFalse(file.exists())
 
     def test_link_records_without_subscription_and_routes_to_requester(self):
+        self.assert_live_link_records('123')
+
+    def test_link_uses_verified_room_when_username_has_no_room(self):
+        self.assert_live_link_records(None, room_owner='Alice')
+
+    def test_link_does_not_record_a_room_owned_by_another_account(self):
+        self.assert_live_link_records(None, room_owner='bob', expect_recording=False)
+
+    def assert_live_link_records(self, username_room, room_owner=None, expect_recording=True):
         job = {'id': '100-1-0', 'userId': '100', 'name': 'alice', 'room': '123',
                'url': 'https://vt.tiktok.com/test/', 'at': 1}
         config = {'allowedIds': ['100'], 'users': {'100': {}}, 'tiktokRequests': {job['id']: job}}
         pending = w.STATE / 'live-requests' / (job['id'] + '.json')
         w.atomic(pending, job)
         api = Mock()
-        api.get_room_id_from_user.return_value = '123'
+        api.get_room_id_from_user.return_value = username_room
+        api.get_user_from_room_id.return_value = room_owner
         api.is_room_alive.return_value = True
         class Base:
             def __init__(self, config):
@@ -138,8 +148,14 @@ class TikTokWorkerTests(unittest.TestCase):
                    'utils.enums': SimpleNamespace(TikTokError=SimpleNamespace(USER_NOT_CURRENTLY_LIVE='offline'))}
         with patch.dict(sys.modules, modules), patch.object(w, 'settings', return_value=config), patch.object(w, 'PROCESSING', queue.Queue()):
             w.record_account('alice', {})
-        api.is_room_alive.assert_called_once_with('123')
         self.assertFalse(pending.exists())
+        if username_room is None:
+            api.get_user_from_room_id.assert_called_once_with('123')
+        if not expect_recording:
+            api.is_room_alive.assert_not_called()
+            self.assertFalse(list((w.STATE / 'processing').glob('*.json')))
+            return
+        api.is_room_alive.assert_called_once_with('123')
         result = json.loads(next((w.STATE / 'processing').glob('*.json')).read_text())
         self.assertEqual(result['recipients'], [w.manual_recipient(job)])
         self.assertEqual(w.subscriptions(config), {})

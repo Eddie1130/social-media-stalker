@@ -319,6 +319,16 @@ def record_account(name, cookie_map, wake=None):
             status(name, '檢查直播中')
             room = rec.tiktok.get_room_id_from_user(name)
             if not room:
+                requested_rooms = {
+                    job['room'] for job in jobs
+                    if isinstance(job.get('room'), str) and re.fullmatch(r'\d{1,30}', job['room'])
+                }
+                if len(requested_rooms) == 1:
+                    requested_room = requested_rooms.pop()
+                    owner = rec.tiktok.get_user_from_room_id(requested_room)
+                    if isinstance(owner, str) and owner.lower() == name:
+                        room = requested_room
+            if not room:
                 raise ValueError('TIKTOK_ROOM_LOOKUP_FAILED')
             matching = []
             for job in jobs:

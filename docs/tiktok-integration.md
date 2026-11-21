@@ -30,6 +30,8 @@ downloads/tiktok/<帳號>/live/<錄影開始時間>_JST_<直播ID>.mp4
 本機與 Telegram 狀態分開保存；影片不因上傳失敗而刪除。傳送結果不確定時通知並停止自動重送，避免重複影片。
 新加入訂閱者不會補送已經開始錄影場次的通知或影片。
 
+手動分享連結帶有數字 `room_id` 時，若依帳號查不到房間，worker 可使用該房間 ID 做備援。必須由 TikTok 確認房間屬於指定帳號且仍在直播，才會錄製。自動訂閱仍須先取得房間資料。
+
 ## 私密設定
 
 `.env.tiktok` 保存 Surfshark OpenVPN service 憑證及 Local Bot API 的 `TELEGRAM_API_ID`／`TELEGRAM_API_HASH`，範本為 `.env.tiktok.example`。
