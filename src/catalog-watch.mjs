@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { atomic } from './error-monitor.mjs';
 import { downloadStory, archiveReason } from './story-archive.mjs';
 import { validMediaUrl } from './story-media.mjs';
-import { sessionInvalid } from './targets.mjs';
+import { checkpointRequired, sessionInvalid } from './targets.mjs';
 import { idOK, highlightId } from './catalog-api.mjs';
 
 export function dateJST(seconds) {
@@ -35,7 +35,7 @@ export async function fetchCatalog(plan,{signal,onChild=()=>{},script='/app/src/
       const child=spawn(process.execPath,[script],{detached:true,stdio:['ignore','pipe','pipe'],env:{...env,IG_CATALOG_PLAN:JSON.stringify(plan),IG_CATALOG_RESULT_FILE:result}});
       onChild(child);let success=false,reason='CATALOG_FETCH_FAILED';
       const kill=()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}};
-      const timer=setTimeout(()=>{reason='CATALOG_FETCH_TIMEOUT';kill();},115000);
+      const timer=setTimeout(()=>{if(!checkpointRequired(Error(reason)))reason='CATALOG_FETCH_TIMEOUT';kill();},115000);
       signal?.addEventListener('abort',kill,{once:true});if(signal?.aborted)kill();
       readline.createInterface({input:child.stdout}).on('line',line=>{try{const r=JSON.parse(line);if(r.event==='CATALOG_HTTP_DIAGNOSTIC'&&['tray','highlight'].includes(r.kind)&&Number.isInteger(r.status)&&['www.instagram.com','i.instagram.com'].includes(r.host))console.log(JSON.stringify({ts:new Date().toISOString(),event:r.event,target:env.IG_TARGET_USER_ID,username:env.IG_TARGET_USERNAME,kind:r.kind,transport:'context_request',status:r.status,host:r.host,redirects:r.redirects}));if(r.event==='CATALOG_OWNER_DIAGNOSTIC')console.log(JSON.stringify({ts:new Date().toISOString(),event:r.event,target:env.IG_TARGET_USER_ID,username:env.IG_TARGET_USERNAME,paginated:r.paginated,owners:r.owners}));if(r.event==='CATALOG_FETCH_SUCCESS')success=true;if(r.event==='CATALOG_FETCH_ERROR'&&/^CATALOG_[A-Z0-9_]+$/.test(r.reason))reason=r.reason;}catch{}});
       child.stderr.resume();
@@ -158,6 +158,7 @@ export class CatalogWatcher {
       try {const result=await this.fetcher(plan,{signal,onChild});this.ingest(plan,result);}
       catch(e){
         this.state=JSON.parse(snapshot);if(signal.aborted)return;
+        if(checkpointRequired(e))throw e;
         if(sessionInvalid(e))throw Error('SHARED_SESSION_INVALID');
         const failed=latest?this.state.posts.latestScan:this.state[group];failed.failures++;
         failed.nextAt=Date.now()+Math.min(3600,300*2**Math.min(failed.failures,4))*1000;

@@ -5,6 +5,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const log = (event, data = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
+export const checkpointAlertReason = 'Instagram HTTP 400 checkpoint_required';
+export const checkpointAlertAction = '已暫停 Instagram 查詢。請手動完成 Instagram 驗證後恢復監控。';
 export function atomic(file,value) {
  const started=performance.now();let outcome='error';
  try {
@@ -50,7 +52,8 @@ export class Issues {
     const continuing = old?.active || old?.pending;
     const count = continuing ? (old.count || 0) + 1 : 1;
     const active = !!old?.active || !retry || count >= 3;
-    if (active && (!old?.active || (!retry && old.reason !== safe(reason)))) queue(this.outbox, 'error', `IG 監控異常：${label}\n${safe(key)}\n${safe(reason)}\n時間：${formatJST()}`, { issueKey: key, reason: safe(reason), username: /^target:([^:]+):/.exec(key)?.[1], target: /^\d+$/.test(scope.target || '') ? scope.target : undefined, usernames: scope.usernames });
+    const action = reason === checkpointAlertReason ? `\n${checkpointAlertAction}` : '';
+    if (active && (!old?.active || (!retry && old.reason !== safe(reason)))) queue(this.outbox, 'error', `IG 監控異常：${label}\n${safe(key)}\n${safe(reason)}${action}\n時間：${formatJST()}`, { issueKey: key, reason: safe(reason), username: /^target:([^:]+):/.exec(key)?.[1], target: /^\d+$/.test(scope.target || '') ? scope.target : undefined, usernames: scope.usernames });
     this.state[key] = { active, pending: !active, label, target: scope.target, usernames: scope.usernames, reason: safe(reason), firstAt: continuing ? old.firstAt : Date.now(), lastAt: Date.now(), count };
     atomic(this.file, this.state);
   }
@@ -107,7 +110,7 @@ export function staleReason(health, now = Date.now()) {
 export function eventIssue(row) {
   const event = row?.event;
   if (event === 'WATCH_TARGET_FAILED') return ['target-runtime', row.reason || 'TARGET_RUNTIME_ERROR'];
-  if (event === 'SHARED_SESSION_INVALID') return ['shared-session', 'SESSION_INVALID_RELOGIN_REQUIRED'];
+  if (event === 'SHARED_SESSION_INVALID') return ['shared-session', row.checkpoint === true ? checkpointAlertReason : 'SESSION_INVALID_RELOGIN_REQUIRED'];
   if (event === 'CATALOG_CHECK_FAILED') return [`catalog-fetch:${safe(row.scope || row.group)}`, row.reason || 'CATALOG_FETCH_FAILED'];
   if (event === 'CATALOG_STORAGE_ERROR') return ['catalog-storage', row.reason || 'CATALOG_STORAGE_FAILED'];
   if (event === 'CATALOG_ARCHIVE_RETRY') return [`catalog-archive:${safe(row.key)}`, row.reason || 'CATALOG_ARCHIVE_FAILED'];

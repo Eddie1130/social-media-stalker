@@ -1,4 +1,5 @@
 import { validMediaUrl } from './story-media.mjs';
+import { checkpointResponse } from './targets.mjs';
 export const POSTS_NAME = 'PolarisProfilePostsQuery';
 export const PAGE_NAME = 'PolarisProfilePostsTabContentQuery_connection';
 export const POST_DOC = '28322872020710458';
@@ -48,6 +49,7 @@ function optionalLocationImageError(body, error) {
   return Array.isArray(edges) && !!edges[path[2]]?.node;
 }
 export function decodeResponse(result, { allowPostLocationImageError = false } = {}) {
+  if (checkpointResponse(result)) throw Error('CATALOG_SESSION_INVALID_CHECKPOINT_REQUIRED');
   if (result.status !== 200) throw Error(`CATALOG_HTTP_${result.status}`);
   let body;
   try {body=JSON.parse(result.text.replace(/^\s*for\s*\(\s*;\s*;\s*\)\s*;\s*/,''));}

@@ -2,6 +2,19 @@ import { ensureTargetUserId } from './target-user.mjs';
 
 export { configuredTargets } from './target-config.mjs';
 
+export function checkpointResponse({ status, text }) {
+  if (status !== 400) return false;
+  try {
+    return JSON.parse(text.replace(/^\s*for\s*\(\s*;\s*;\s*\)\s*;\s*/, ''))?.message === 'checkpoint_required';
+  } catch {
+    return false;
+  }
+}
+
+export function checkpointRequired(error) {
+  return /^(?:CATALOG_)?SESSION_INVALID_CHECKPOINT_REQUIRED(?:$|:http=400:exit=(?:-?\d+|null)$)/.test(error?.message || '');
+}
+
 export function sessionInvalid(error) {
   return /(?:^|:)SESSION_INVALID(?:$|:)|^(?:TARGET|CATALOG)_SESSION_INVALID$/.test(error?.message || '');
 }

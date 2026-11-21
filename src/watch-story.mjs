@@ -5,6 +5,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { checkpointRequired } from './targets.mjs';
 
 const log = (event, data = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
 export function save(file, state) {
@@ -64,8 +65,10 @@ export function fetchStories(script, onChild = () => {}, timeoutMs = 120000, env
     child.on('close', code => {
       clearTimeout(timer);
       onChild(null);
-      if (expired) reject(new Error('FETCH_TIMEOUT'));
-      else if (code !== 0 || !result) reject(new Error(`${event}:exit=${code}`));
+      const failure = new Error(`${event}:exit=${code}`);
+      if (checkpointRequired(failure)) reject(failure);
+      else if (expired) reject(new Error('FETCH_TIMEOUT'));
+      else if (code !== 0 || !result) reject(failure);
       else resolve(result);
     });
   });

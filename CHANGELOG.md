@@ -4,6 +4,12 @@
 
 ### 本機 Instagram 診斷
 
+- 偵測到 Instagram HTTP 400 `checkpoint_required` 時，第一次出現就排入 Telegram 告警，並持久化暫停共用登入的查詢。完成手動驗證後可解除暫停。
+
+- 使用者完成 Instagram 自拍驗證後，已關閉並移除本機暫用 noVNC 容器。確認該容器已退出後，移開其遺留的 Chromium profile 鎖並重啟監控。20:39 HKT 實測 `@t_comjp` 的限時動態、貼文和精選查詢均成功，`ig-watch` 與 `ig-watchdog` 均為 `healthy`。
+
+- 在本機 noVNC 開啟 Instagram 後，畫面導向 `/accounts/suspended/`，顯示需要上傳自拍以驗證帳號身分。
+
 - 20:03 HKT，`@t_comjp` 的限時動態查詢收到 Instagram HTTP 400 `checkpoint_required`，回應只有 `message` 和 `status`，無法確認驗證類型。同輪精選查詢遇到登入初始化頁面重新導向。Docker 仍回報 `healthy`，兩項首次失敗仍待重試。較早四次監控重啟均由 worker 進度逾時觸發，時間與 Mac 睡眠期間的喚醒重合。診斷期間未重啟服務或更動登入資料。
 
 ### TikTok Catalog 穩定性修正

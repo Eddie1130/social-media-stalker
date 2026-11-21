@@ -112,4 +112,4 @@ try {
   fs.writeFileSync(process.env.IG_CATALOG_RESULT_FILE,JSON.stringify({version:1,target:config.target,guard,...normalized}),{mode:0o600,flag:'wx'});
   log('CATALOG_FETCH_SUCCESS',{kind:plan.kind,itemCount:(normalized.highlights||normalized.media||normalized.posts||[]).length,guard});
 }catch(e){log('CATALOG_FETCH_ERROR',{reason:/^CATALOG_[A-Z0-9_]+$/.test(e.message)?e.message:`CATALOG_${stage}_BROWSER_OR_NETWORK_ERROR`});process.exitCode=1;}
-finally{if(context)try{await context.close();}catch{log('CATALOG_FETCH_ERROR',{reason:'CATALOG_BROWSER_CLOSE_ERROR'});process.exitCode=1;}}
+finally{if(context)try{await context.close();}catch{if(!process.exitCode)log('CATALOG_FETCH_ERROR',{reason:'CATALOG_BROWSER_CLOSE_ERROR'});process.exitCode=1;}}

@@ -1,11 +1,11 @@
 import { createHealthWriter } from './health-writer.mjs';
 import { telegramApiBase } from './telegram-endpoint.mjs';
-import { recoverableIssue } from './error-monitor.mjs';
+import { checkpointAlertAction, checkpointAlertReason, load, recoverableIssue } from './error-monitor.mjs';
 import { ManualJobs } from './manual-jobs.mjs';
 import { controlEnabled, readSettings, settingsFile, targetConfigs } from './telegram-settings.mjs';
 import { notificationPublisher } from './telegram-events.mjs';
 import { ensureAuthenticated } from './target-user.mjs';
-import { configuredTargets, resolveTarget, sessionInvalid, aggregateHealth } from './targets.mjs';
+import { checkpointRequired, configuredTargets, resolveTarget, sessionInvalid, aggregateHealth } from './targets.mjs';
 import { accountArchiveRoot } from './archive-layout.mjs';
 import { pathToFileURL } from 'node:url';
 import { CatalogWatcher, fetchCatalog } from './catalog-watch.mjs';
@@ -86,9 +86,18 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
   });
   let entries = configs.map(makeEntry);
   let sessionBlocked = null, sessionAlerted = false, sessionRecoveryPending = false;
+  const checkpointFile = path.join(dir, 'instagram-checkpoint.json');
+  let checkpointPaused = false;
+  const blockCheckpoint = () => {
+    save(checkpointFile, { alerted: false });
+    checkpointPaused = true;
+    sessionAlerted = false;
+    sessionRecoveryPending = false;
+    emit('SHARED_SESSION_INVALID', { checkpoint: true });
+  };
   const notifySession = async () => {
     if (managed || env.IG_EXTERNAL_ERROR_MONITOR === '1') return;
-    if (!sessionBlocked) {
+    if (!sessionBlocked && !checkpointPaused) {
       if (sessionRecoveryPending) {
         try { await telegram('sendMessage', { text: 'IG 共用登入已恢復，繼續監看所有帳號。' }); sessionRecoveryPending = false; }
         catch (error) { emit('TELEGRAM_DELIVERY_FAILED', { reason: error.message }); }
@@ -97,12 +106,18 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
     }
     if (sessionAlerted) return;
     try {
-      await telegram('sendMessage', { text: 'IG 共用登入已失效，所有帳號暫停檢查。請重新登入；系統每五分鐘確認登入狀態。' });
+      await telegram('sendMessage', { text: checkpointPaused
+        ? `${checkpointAlertReason}\n${checkpointAlertAction}`
+        : 'IG 共用登入已失效，所有帳號暫停檢查。請重新登入；系統每五分鐘確認登入狀態。' });
       sessionAlerted = true;
+      if (checkpointPaused && fs.existsSync(checkpointFile)) save(checkpointFile, { alerted: true });
     } catch (error) { emit('TELEGRAM_DELIVERY_FAILED', { reason: error.message }); }
   };
   const publishHealth = createHealthWriter(path.join(dir, 'health.json'), { intervalMs: 30000 });
-  const health = () => publishHealth( { ...aggregateHealth(entries), sessionOk: !sessionBlocked, ...(sessionBlocked ? { failures: 3 } : {}) });
+  const health = () => {
+    const blocked = !!sessionBlocked || checkpointPaused;
+    publishHealth({ ...aggregateHealth(entries), sessionOk: !blocked, ...(blocked ? { failures: 3 } : {}) });
+  };
   const heartbeat = setInterval(() => {
     try { health(); } catch { emit('WATCH_FATAL', { reason: 'HEALTH_WRITE_FAILED' }); process.exit(1); }
   }, 30000);
@@ -111,6 +126,23 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
     archiveEnabled: !!env.IG_ARCHIVE_DIR, catalogEnabled: env.IG_CATALOG_ENABLED === '1' });
   try {
     while (!stopping) {
+      const checkpoint = load(checkpointFile, null);
+      if (checkpoint) {
+        if (!checkpointPaused) {
+          checkpointPaused = true;
+          sessionAlerted = checkpoint.alerted === true;
+          emit('SHARED_SESSION_INVALID', { checkpoint: true });
+        }
+        health();
+        await notifySession();
+        if (args.includes('--once')) { process.exitCode = 1; break; }
+        emit('WATCH_WAIT', { seconds: 5 }); await sleep(5000); continue;
+      }
+      if (checkpointPaused) {
+        checkpointPaused = false;
+        sessionAlerted = false;
+        sessionBlocked = null;
+      }
       if (managed) {
         const desired = currentConfigs();
         const existing = new Map(entries.map(e => [e.config.username, e]));
@@ -186,6 +218,7 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
           entry.error = null; entry.retryAt = 0; entry.runtimeFailures = 0; entry.runtimeCritical = false;
           entry.nextCycleAt = cycle?.yielded ? 0 : Math.min(cycle?.nextArchiveAt||Infinity,Date.now() + Math.max(1000, Math.min(interval * 1000, entry.watcher.status().nextFetchAt - Date.now())));
         } catch (error) {
+          if (checkpointRequired(error)) { blockCheckpoint(); break; }
           if (error.message === 'SHARED_SESSION_INVALID') { sessionBlocked = { ...config, probeAt: Date.now() + 300000 }; emit('SHARED_SESSION_INVALID'); break; }
           // Preserve the in-memory queue after a failed write. Only this account pauses.
           entry.error = error.code || (/^[A-Z0-9_]+$/.test(error.message) ? error.message : 'TARGET_RUNTIME_ERROR');
@@ -217,10 +250,10 @@ export async function main({ env = process.env, args = process.argv, dir = '/app
       if (stopping) break;
       if (args.includes('--once')) {
         const status = aggregateHealth(entries);
-        process.exitCode = sessionBlocked || status.failures || !status.telegramOk || !status.archiveOk || !status.catalogOk ? 1 : 0;
+        process.exitCode = checkpointPaused || sessionBlocked || status.failures || !status.telegramOk || !status.archiveOk || !status.catalogOk ? 1 : 0;
         break;
       }
-      const delay = sessionBlocked ? (managed ? 5000 : 300000) : Math.max(1000, Math.min(managed ? 5000 : interval * 1000, ...entries.map(e => (e.error ? e.retryAt : e.nextCycleAt || e.nextFetchAt) - Date.now())));
+      const delay = checkpointPaused ? 5000 : sessionBlocked ? (managed ? 5000 : 300000) : Math.max(1000, Math.min(managed ? 5000 : interval * 1000, ...entries.map(e => (e.error ? e.retryAt : e.nextCycleAt || e.nextFetchAt) - Date.now())));
       emit('WATCH_WAIT', { seconds: Math.ceil(delay / 1000) }); await sleep(delay);
     }
   } finally {
@@ -315,6 +348,7 @@ export function createTargetWatcher({ target, username, dir, root, interval, con
           if (control.stopping) return;
           state.failures++;
           state.lastError = mediaFailureReason(error);
+          if (checkpointRequired(error)) throw error;
           if (sessionInvalid(error)) { persist(); throw Error('SHARED_SESSION_INVALID'); }
           log('WATCH_CHECK_FAILED', { consecutiveFailures: state.failures, reason: state.lastError });
         } finally {

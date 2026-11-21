@@ -90,6 +90,8 @@ docker compose --profile login run --rm --service-ports ig-login
 
 開啟 [本機 noVNC](http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale)，輸入 `.env` 的 VNC 密碼，使用專用小號登入 Instagram。完成後在終端按 `Ctrl-C`，等到出現 `LOGIN_BROWSER_STOPPED`；登入資料保存在 `data/profile/`。請勿同時讓多個瀏覽器命令使用該 profile。
 
+Instagram 回傳 HTTP 400 `checkpoint_required` 時，監控會立即排入 Telegram 告警，暫停 Instagram 查詢，重啟也會保留暫停狀態。完成 Instagram 驗證並關閉登入瀏覽器後，啟動 `ig-watch`，再執行 `./igctl exec -T ig-watch rm -f /app/state/instagram-checkpoint.json` 解除暫停。
+
 遠端主機先建立 SSH tunnel，再於自己的電腦開啟上面的網址：
 
 ```sh

@@ -2,6 +2,7 @@ import { ensureTargetUserId } from './target-user.mjs';
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import { installNetworkGuard } from './network-guard.mjs';
+import { checkpointResponse } from './targets.mjs';
 
 const PROFILE_DIR = '/data/profile';
 const LOG_FILE = '/app/logs/audit.log';
@@ -228,6 +229,10 @@ try {
   });
 
   if (result.status !== 200) {
+    if (checkpointResponse(result)) {
+      fail(6, 'SESSION_INVALID_CHECKPOINT_REQUIRED', { status: result.status });
+      throw Error('Instagram checkpoint required');
+    }
     fail(6, 'STORY_HTTP_ERROR', {
       status: result.status,
       url: result.url,

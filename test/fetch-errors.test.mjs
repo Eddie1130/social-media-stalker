@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import * as media from '../src/story-media.mjs';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import { decodeResponse } from '../src/catalog-api.mjs';
+import { checkpointResponse } from '../src/targets.mjs';
+import { fetchStories } from '../src/watch-story.mjs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Execute the real catalog bootstrap against a controlled browser boundary.
 async function catalogBootstrap(status, finalUrl) {
@@ -44,5 +49,24 @@ test('media alerts never expose arbitrary exception text or URLs', () => {
   for (const message of ['ENOENT: open /private/result.json', 'BOOTSTRAP_HTTP_ERROR:https://secret.example', 'FETCH_ERROR:secret']) {
     assert.equal(media.mediaFailureReason(Error(message)), 'MEDIA_RESULT_READ_FAILED');
   }
+});
+
+test('only an explicit Instagram HTTP 400 checkpoint response pauses monitoring', () => {
+  const text = JSON.stringify({ message: 'checkpoint_required', status: 'fail' });
+  assert.equal(checkpointResponse({ status: 400, text }), true);
+  assert.equal(checkpointResponse({ status: 403, text }), false);
+  assert.equal(checkpointResponse({ status: 400, text: '<html>checkpoint_required</html>' }), false);
+  assert.throws(() => decodeResponse({ status: 400, text }), /^Error: CATALOG_SESSION_INVALID_CHECKPOINT_REQUIRED$/);
+  assert.throws(() => decodeResponse({ status: 400, text: '{"message":"other_error"}' }), /^Error: CATALOG_HTTP_400$/);
+});
+
+test('Story fetch subprocess preserves the checkpoint response code', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ig-fetch-errors-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const script = path.join(dir, 'worker.mjs');
+  await fs.writeFile(script, `console.log(JSON.stringify({ event: 'SESSION_INVALID_CHECKPOINT_REQUIRED', status: 400 }));
+console.log(JSON.stringify({ event: 'BROWSER_CLOSE_ERROR' }));
+process.exitCode = 6;`);
+  await assert.rejects(fetchStories(script), /^Error: SESSION_INVALID_CHECKPOINT_REQUIRED:http=400:exit=6$/);
 });
 

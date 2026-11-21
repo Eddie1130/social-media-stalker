@@ -78,6 +78,50 @@ test('shared session failure stops remaining accounts and marks health unhealthy
   process.exitCode = 0;
 });
 
+test('checkpoint alerts on first failure and blocks Instagram across worker restarts', async t => {
+  const f = fixture(t), calls = [], sent = [], args = [];
+  let probes = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    sent.push(JSON.parse(options.body));
+    return { ok: true, json: async () => ({ ok: true }) };
+  });
+  const options = { env, args, dir: f.state, resolve, checkSession: async () => { probes++; throw Error('SESSION_INVALID'); },
+    fetcher: fakeFetch(calls, () => 'SESSION_INVALID_CHECKPOINT_REQUIRED:http=400:exit=6'),
+    sleepImpl: async delay => { if (delay >= 5000) args.push('--once'); } };
+  const exitCode = process.exitCode;
+  try {
+    await main(options);
+    assert.deepEqual(calls, ['101']);
+    assert.equal(probes, 0);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /HTTP 400 checkpoint_required/);
+    assert.equal(read(path.join(f.state, 'health.json')).sessionOk, false);
+    await main({ ...options, args: ['--once'], resolve: () => assert.fail('blocked session must survive restart') });
+    assert.equal(probes, 0);
+    assert.deepEqual(calls, ['101']);
+    assert.equal(sent.length, 1);
+    fs.unlinkSync(path.join(f.state, 'instagram-checkpoint.json'));
+    await main({ ...options, args: ['--once'], fetcher: fakeFetch(calls) });
+    assert.deepEqual(calls, ['101', '101', '202']);
+    assert.equal(read(path.join(f.state, 'health.json')).sessionOk, true);
+  } finally { process.exitCode = exitCode; }
+});
+
+test('supervised checkpoint queues the Telegram error on first occurrence and deduplicates it', t => {
+  const f = fixture(t), outbox = path.join(f.dir, 'outbox');
+  const state = path.join(f.dir, 'issues.json');
+  const problem = eventIssue({ event: 'SHARED_SESSION_INVALID', checkpoint: true });
+  new Issues(state, outbox, 'IG').fail(...problem);
+  new Issues(state, outbox, 'IG').fail(...problem);
+  const files = fs.readdirSync(outbox);
+  assert.equal(files.length, 1);
+  const alert = read(path.join(outbox, files[0]));
+  assert.equal(alert.kind, 'error');
+  assert.equal(alert.issueKey, 'shared-session');
+  assert.match(alert.text, /HTTP 400 checkpoint_required/);
+  assert.match(alert.text, /已暫停 Instagram 查詢/);
+});
+
 test('Telegram-only test skips Instagram resolution with multiple targets', async t => {
   const f = fixture(t);
   t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ ok: true }) }));
