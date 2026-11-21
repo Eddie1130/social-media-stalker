@@ -10,6 +10,7 @@
 ## 目錄
 
 - [功能與平台](#功能與平台)
+- [系統架構與資料流](#系統架構與資料流)
 - [部署前準備](#部署前準備)
 - [快速開始](#快速開始)
 - [Telegram 操作](#telegram-操作)
@@ -34,6 +35,31 @@
 - **選用 ZIP 匯出**：在 Telegram 申請單一帳號的既有封存，透過 HTTPS 連結下載，有效期 24 小時。需額外啟用匯出服務及 tunnel。
 
 Instagram 首次貼文／精選掃描會安靜下載可存取歷史，之後的新發現才發媒體通知；加入時仍可讀取的 Story 可立即通知。獨立 Reels 分頁不在自動掃描範圍，但可貼連結下載。已過期或刪除且未保存的內容無法保證恢復。
+
+## 系統架構與資料流
+
+```mermaid
+flowchart TD
+    chat["Telegram 私人聊天"] <-->|"指令、通知與媒體"| api["telegram-bot-api<br/>Local Bot API"]
+    api <-->|"接收更新與傳送訊息"| bot["ig-telegram<br/>驗證使用者、處理指令與配送"]
+    bot -->|"保存訂閱、通知設定、下載與回補申請"| control["data/control/<br/>個人設定、操作申請與配送收據"]
+    control -->|"讀取訂閱與操作申請"| workers
+
+    subgraph workers["平台監控與下載服務"]
+        ig["ig-watch<br/>透過已登入的 Chromium 擷取 Instagram"]
+        x["x-watch<br/>透過 FxTwitter 監控，透過 twscrape 回補"]
+        tt["tiktok-watch / tiktok-catalog<br/>透過 VPN 錄製 LIVE 與擷取內容"]
+    end
+
+    workers -->|"保存媒體"| media["downloads/<br/>Instagram、X、TikTok 封存"]
+    workers -->|"記錄工作進度與寫入配送事件"| state["data/watch/<br/>工作佇列、封存索引與健康狀態"]
+    state -->|"讀取待配送事件"| bot
+    media -->|"讀取要傳送的檔案"| bot
+```
+
+以一則新的 Instagram Story 為例，`ig-watch` 依訂閱清單掃描帳號，先封存媒體，再記錄配送事件。`ig-telegram` 依各訂閱者的通知設定傳送檔案，並保存個人配送收據。關閉通知後，平台 worker 仍會繼續封存已訂閱帳號的內容。
+
+`ig-watchdog` 另行檢查 Instagram 監控狀態，異常時將告警交給 Bot。啟用選用的 ZIP 匯出後，`archive-export` 從既有封存建立 ZIP，Bot 回傳有效期 24 小時的 HTTPS 連結，使用者透過 `archive-tunnel` 下載。詳見 [封存匯出說明](docs/archive-export.md)。
 
 ## 部署前準備
 
