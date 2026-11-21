@@ -423,6 +423,21 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(pending.exists())
         self.fetch.assert_not_called()
 
+    @patch("catalog_worker.POST_POLL_TEST_INTERVAL", 3600)
+    def test_post_poll_test_waits_an_hour_on_failure_and_success(self):
+        self.fetch.side_effect = RuntimeError("TIKTOK_EMPTY_RESPONSE")
+        start = self.time
+        self.catalog.poll("alice", "post", self.settings)
+        self.assertEqual(self.catalog.stream("alice", "post")["nextAt"], start + 3600000)
+        self.time = start + 3599999
+        self.catalog.poll("alice", "post", self.settings)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.time = start + 3600000
+        self.fetch.side_effect = None
+        self.fetch.return_value = self.page()
+        self.catalog.poll("alice", "post", self.settings)
+        self.assertEqual(self.catalog.stream("alice", "post")["nextAt"], start + 7200000)
+
     def test_transient_poll_notifies_only_third_failure_and_recovery(self):
         self.fetch.side_effect = RuntimeError("TIKTOK_PROVIDER_TIMEOUT")
         for attempt in range(1, 5):
@@ -980,7 +995,8 @@ class ProviderTests(unittest.TestCase):
             session("alice", "post")
             session("alice", "repost")
             launch.assert_called_once()
-            browser.navigate.assert_not_called()
+            browser.navigate.assert_called_once_with("alice")
+            browser.navigate.reset_mock()
             session("bob", "post")
             browser.navigate.assert_called_once_with("bob")
             fetch.side_effect = RuntimeError("TIKTOK_CAPTCHA_REQUIRED")

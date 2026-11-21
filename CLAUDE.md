@@ -10,3 +10,5 @@
 - 不因 Docker healthy 就認定查詢成功；核對 `lastSuccess`、失敗分類、SQLite 與佇列進度。
 
 正式 SQLite 完整性檢查使用 online backup 快照，先關閉來源連線再執行 quick_check。
+
+公開貼文預設使用獨立匿名 context（TIKTOK_CATALOG_ANONYMOUS_POSTS=1）；其他類型保留登入 context。兩者共用 Chromium、隔離 Cookie，禁止將登入 Cookie 複製到匿名 context。設 0 可回復舊查詢模式，無需回滾資料庫。

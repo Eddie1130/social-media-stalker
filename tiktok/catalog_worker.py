@@ -19,7 +19,7 @@ import traceback
 
 from catalog_errors import classify_failure, safe_diagnostic, sqlite_busy
 from catalog_metrics import record, snapshot as metrics_snapshot
-from catalog_provider import identifier, media_url
+from catalog_provider import POST_REQUEST_GAP_MS, identifier, media_url
 from catalog_media import delivery_parts
 from catalog_layout import migrate_media_layout, account_media
 from archive_links import ensure_archive_link
@@ -27,6 +27,7 @@ from worker import atomic, cookies, subscriptions, needs_attention
 
 KINDS = ("story", "post", "repost", "profile", "like")
 PERIOD = {"post": 300, "repost": 300, "story": 120, "profile": 1800, "like": 600}
+POST_POLL_TEST_INTERVAL = int(os.getenv("TIKTOK_CATALOG_POST_POLL_TEST_SECONDS", "0"))
 STOP = threading.Event()
 
 
@@ -99,6 +100,8 @@ class SessionProvider:
 
     def __call__(self, name, kind, cursor="0", item_id=None):
         started = time.perf_counter()
+        scheduled_post = kind == "post" and item_id is None
+        single_attempt = scheduled_post and (POST_POLL_TEST_INTERVAL > 0 or POST_REQUEST_GAP_MS > 0)
         try:
             for attempt in range(2):
                 try:
@@ -108,7 +111,10 @@ class SessionProvider:
                     if failure.category == "transport":
                         self.recover(failure)
                         raise
-                    if attempt or not failure.retryable or STOP.is_set():
+                    if scheduled_post and failure.category == "empty_response":
+                        # The owner schedules the next attempt using the persisted backoff.
+                        raise
+                    if single_attempt or attempt or not failure.retryable or STOP.is_set():
                         raise
                     if failure.category == "empty_response":
                         time.sleep(random.uniform(1, 3))
@@ -133,16 +139,28 @@ class SessionProvider:
         from catalog_regular_browser import RegularBrowserTransport
         from catalog_provider import fetch_page
 
+        anonymous = kind == "post" and os.getenv("TIKTOK_CATALOG_ANONYMOUS_POSTS", "1") == "1"
+        allow_post_list = kind == "post" and item_id is None
+        session_cookies = {} if anonymous else cookies()
         try:
             if self.browser and self.max_age and time.monotonic() - self.opened_at >= self.max_age:
                 self.close()
             if self.browser is None:
-                self.browser = RegularBrowserTransport(name, cookies())
+                self.browser = RegularBrowserTransport(
+                    name, session_cookies, anonymous=anonymous, allow_post_list=allow_post_list
+                )
                 self.name = name
                 self.opened_at = time.monotonic()
             else:
+                self.browser.allow_post_list = allow_post_list
                 self.browser.resume()
-                if self.name != name or kind == "profile":
+                switched = self.browser.select_anonymous(anonymous)
+                if switched and not anonymous:
+                    self.browser.restore_cookies(
+                        Path(os.getenv("TIKTOK_CATALOG_PROFILE", "/data/catalog-profile")),
+                        session_cookies,
+                    )
+                if switched or self.name != name or kind == "profile":
                     self.name = None
                     self.browser.navigate(name)
                     self.name = name
@@ -150,7 +168,7 @@ class SessionProvider:
                 "username": name,
                 "kind": kind,
                 "cursor": cursor,
-                "cookies": cookies(),
+                "cookies": session_cookies,
             }
             if item_id:
                 request["itemId"] = item_id
@@ -316,6 +334,7 @@ class Catalog:
             Path(control),
         )
         self.fetcher, self.downloader, self.clock = fetcher, downloader, clock
+        self._next_post_poll_at = 0
         self.active_names = None
         self.health_snapshot = {"targets": {}, "pending": 0, "phase": "running"}
         self.folder = self.state_dir / "tiktok/catalog"
@@ -429,17 +448,30 @@ class Catalog:
             "INSERT OR IGNORE INTO outbox VALUES(?,?)", (key, json.dumps(event))
         )
 
+    def post_poll_allowed(self, now):
+        return now >= self._next_post_poll_at
+
     def poll(self, name, kind, settings):
         state, now = self.stream(name, kind), self.clock()
+        paced_post = kind == "post" and POST_REQUEST_GAP_MS > 0
+        if paced_post and not self.post_poll_allowed(now):
+            return
         recipients = self.target_recipients(settings, name, kind)
+        test_interval_ms = max(0, POST_POLL_TEST_INTERVAL) * 1000 if kind == "post" else 0
         requested = max((r["historyAt"] for r in recipients), default=0)
         if requested > state.get("historyAt", 0):
-            state.update(historyAt=requested, backfill=True, cursor="0", nextAt=0)
+            state.update(historyAt=requested, backfill=True, cursor="0")
+            if not test_interval_ms:
+                state["nextAt"] = 0
         if now < state["nextAt"] or not recipients:
             return
         original_state = copy.deepcopy(state)
         try:
-            result = self.fetcher(name, kind, state.get("cursor", "0"))
+            try:
+                result = self.fetcher(name, kind, state.get("cursor", "0"))
+            finally:
+                if paced_post:
+                    self._next_post_poll_at = self.clock() + POST_REQUEST_GAP_MS
             uid = identifier(result["userId"])
             if state.get("userId") and state["userId"] != uid:
                 raise RuntimeError("TIKTOK_ACCOUNT_ID_CHANGED")
@@ -653,7 +685,7 @@ class Catalog:
                 reason=None,
                 errorType=None,
                 lastSuccess=now,
-                nextAt=now + (PERIOD[kind] * 1000 if finished else 30000),
+                nextAt=now + max(test_interval_ms, PERIOD[kind] * 1000 if finished else 30000),
                 generations=(
                     {r["userId"]: r["generation"] for r in recipients}
                     if finished
@@ -699,7 +731,9 @@ class Catalog:
             state["errorType"] = type(error).__name__
             abnormal = state.get("alerted") or state["failures"] >= 3 or needs_attention(error)
             state["phase"] = "異常／重試中" if abnormal else f"等待重試（{state['failures']}/3）"
-            state["nextAt"] = now + min(3600000, 30000 * 2 ** min(state["failures"], 6))
+            state["nextAt"] = now + max(
+                test_interval_ms, min(3600000, 30000 * 2 ** min(state["failures"], 6))
+            )
             retry_after=getattr(error,"retry_after",0)
             if isinstance(retry_after,(int,float)) and 0<retry_after<=604800:state["nextAt"]=max(state["nextAt"],now+retry_after*1000)
             self.save_stream(name, kind, state)

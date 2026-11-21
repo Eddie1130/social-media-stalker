@@ -12,16 +12,65 @@ class RecoveryTests(unittest.TestCase):
   self.assertEqual(classify_failure(RuntimeError('TIKTOK_EMPTY_RESPONSE')).category,'empty_response')
   self.assertEqual(classify_failure(RuntimeError('TIKTOK_CAPTCHA_REQUIRED')).category,'captcha')
   self.assertFalse(classify_failure(RuntimeError('TIKTOK_CAPTCHA_REQUIRED')).retryable)
- def test_empty_retry_bounded_and_captcha_not_retried(self):
+ def test_scheduled_post_empty_response_waits_for_next_poll(self):
+  session=SessionProvider()
+  with patch('catalog_worker.POST_POLL_TEST_INTERVAL',0), patch.object(
+   session,'_query',side_effect=RuntimeError('TIKTOK_EMPTY_RESPONSE')
+  ) as query, patch('catalog_worker.time.sleep') as delay:
+   with self.assertRaisesRegex(RuntimeError,'TIKTOK_EMPTY_RESPONSE'):
+    session('alice','post')
+   query.assert_called_once_with('alice','post','0',None)
+   delay.assert_not_called()
+
+ def test_other_empty_retries_bounded_and_captcha_not_retried(self):
   s=SessionProvider()
-  with patch.object(s,'_query',side_effect=[RuntimeError('TIKTOK_EMPTY_RESPONSE'),{'ok':True}]) as q,patch('catalog_worker.time.sleep'):
-   self.assertEqual(s('alice','post'),{'ok':True});self.assertEqual(q.call_count,2)
+  for kind,item_id in (('story',None),('post','123')):
+   with self.subTest(kind=kind,item_id=item_id), patch.object(
+    s,'_query',side_effect=[RuntimeError('TIKTOK_EMPTY_RESPONSE'),{'ok':True}]
+   ) as q, patch('catalog_worker.time.sleep'):
+    self.assertEqual(s('alice',kind,item_id=item_id),{'ok':True})
+    self.assertEqual(q.call_count,2)
   with patch.object(s,'_query',side_effect=RuntimeError('TIKTOK_CAPTCHA_REQUIRED')) as q:
    with self.assertRaises(RuntimeError):s('alice','post')
    self.assertEqual(q.call_count,1)
 
 import test_tiktok_catalog as fixture_module
 class RateLimitTests(unittest.TestCase):
+ def test_post_cooldown_is_global_and_leaves_other_streams_eligible(self):
+  import copy
+  from catalog_scheduler import select_stream
+  f=fixture_module.CatalogTests();f.setUp();self.addCleanup(f.doCleanups)
+  for user in f.settings['users'].values():
+   user['tiktokTargets']['bob']=copy.deepcopy(user['tiktokTargets']['alice'])
+  for name in ('alice','bob'):
+   for kind in ('story','post','repost','profile'):
+    state=f.catalog.stream(name,kind)
+    state.update(baseline=True,nextAt=0 if kind=='post' or (name,kind)==('alice','repost') else 999999)
+    f.catalog.save_stream(name,kind,state)
+  f.catalog.db.commit()
+
+  def fetch(name,kind,cursor):
+   if (name,kind)==('alice','post'):
+    f.time+=15000
+    raise RuntimeError('TIKTOK_EMPTY_RESPONSE')
+   return {**f.page(kind,rows=[]), 'username':name}
+
+  f.fetch.side_effect=fetch
+  with patch('catalog_worker.POST_REQUEST_GAP_MS',120000,create=True):
+   f.catalog.poll('alice','post',f.settings)
+   deadline=f.time+120000
+   f.catalog.poll('bob','post',f.settings)
+   self.assertEqual(f.fetch.call_count,1)
+   self.assertEqual(select_stream(f.catalog,f.settings,f.time),('alice','repost'))
+   f.catalog.poll('alice','repost',f.settings)
+   f.time=deadline-1
+   f.catalog.poll('bob','post',f.settings)
+   self.assertEqual(f.fetch.call_count,2)
+   f.time=deadline
+   self.assertEqual(select_stream(f.catalog,f.settings,f.time),('bob','post'))
+   f.catalog.poll('bob','post',f.settings)
+   self.assertEqual(f.fetch.call_count,3)
+
  def test_server_retry_after_is_not_shortened_by_local_backoff(self):
   f=fixture_module.CatalogTests();f.setUp();self.addCleanup(f.doCleanups)
   error=RuntimeError('TIKTOK_RATE_LIMITED');error.retry_after=300

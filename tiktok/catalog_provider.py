@@ -4,10 +4,14 @@ import contextlib
 import copy
 import json
 import logging
+import os
 import re
 import sys
 from types import SimpleNamespace
 from urllib.parse import urlparse
+
+
+POST_REQUEST_GAP_MS = max(0, int(os.getenv("TIKTOK_CATALOG_POST_REQUEST_GAP_SECONDS", "0"))) * 1000
 
 
 class ProviderError(RuntimeError):
@@ -210,7 +214,10 @@ def fetch_page(request, transport=None):
         "Referer": "https://www.tiktok.com/",
     }
 
+    post_list_requested = False
+
     def readonly(url, *args, **kwargs):
+        nonlocal post_list_requested
         parsed = urlparse(url)
         if (
             parsed.scheme != "https"
@@ -229,6 +236,11 @@ def fetch_page(request, transport=None):
             )
         ):
             raise ProviderError("TIKTOK_READ_GUARD_REJECTED")
+        if POST_REQUEST_GAP_MS and parsed.path == "/api/post/item_list/":
+            if post_list_requested:
+                # gallery-dl can retry invalid JSON before the scheduler is notified.
+                raise ProviderError("TIKTOK_RESPONSE_INVALID")
+            post_list_requested = True
         kwargs["allow_redirects"] = False
         response = (
             transport.request(url) if transport else original(url, *args, **kwargs)

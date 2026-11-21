@@ -77,9 +77,10 @@ class BrowserWorker:
         proc=self.proc;self.proc=None;self.pending=None
         if not proc:return
         try:
-            try:os.killpg(proc.pid,signal.SIGTERM)
+            # Let the owner close Chromium before signalling its descendants.
+            try:proc.terminate()
             except ProcessLookupError:pass
-            try:proc.wait(timeout=5)
+            try:proc.wait(timeout=20)
             except subprocess.TimeoutExpired:pass
         finally:
             # A reaped group leader does not mean Chromium and its descendants

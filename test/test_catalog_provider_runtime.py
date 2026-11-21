@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tiktok"))
-from catalog_provider import fetch_page
+from catalog_provider import ProviderError, fetch_page
 
 try:
     from gallery_dl.extractor import tiktok
@@ -20,6 +20,31 @@ except ImportError:
 
 @unittest.skipIf(tiktok is None, "requires the pinned gallery-dl runtime")
 class ProviderRuntimeTests(unittest.TestCase):
+    def test_paced_post_worker_sends_only_one_request_for_malformed_json(self):
+        scope = {
+            "webapp.user-detail": {"statusCode": 0, "userInfo": {"user": {
+                "id": "123", "secUid": "fixture", "uniqueId": "alice",
+            }}},
+            "webapp.app-context": {},
+        }
+        html = '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">' + json.dumps({"__DEFAULT_SCOPE__": scope}) + "</script>"
+        transport = self.transport(html)
+        original = transport.request
+        posts = []
+
+        def request(url):
+            response = original(url)
+            if "/api/post/item_list/" in url:
+                posts.append(url)
+                response.text = "malformed JSON"
+            return response
+
+        transport.request = request
+        with patch('catalog_provider.POST_REQUEST_GAP_MS', 120000, create=True):
+            with self.assertRaisesRegex(ProviderError, 'TIKTOK_RESPONSE_INVALID'):
+                fetch_page({"username": "alice", "kind": "post", "cookies": {}}, transport)
+        self.assertEqual(len(posts), 1)
+
     def transport(self, html):
         return SimpleNamespace(
             page=SimpleNamespace(evaluate=lambda script: "Mozilla/5.0"),

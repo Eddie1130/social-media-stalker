@@ -163,3 +163,24 @@ timeout 86400 docker run --rm --init --network none --log-driver none \
 診斷映像以正式基底 8281505aa598 建置，標籤為 social-media-stalker-tiktok-catalog:post-response-diag。套用此版時在 igctl 的 up／config 前加入 `-f data/backups/catalog-reliability-20261118/post-diag/compose.yml`；rollback.yml 固定原正式映像。先依上方步驟檢查相依設定及備份，僅替換 catalog。
 
 在最終輪詢失敗日誌查看 browserDiagnostic.postResponse。stage=provider_empty 且 readBytes=0 表示瀏覽器完成讀取時已有零位元組；readBytes>0 時，請比對 providerChars（空白及 UTF-8 BOM 也可能被消去）。stage=read 表示已取得 headers 但本文讀取失敗。declaredBytes=null 表示沒有可用長度，壓縮也會令宣告長度與解碼後實讀長度不同。診斷僅反映瀏覽器看到的回應，無法據此歸責源站或 VPN；成功重試不產生最終失敗日誌。沒有新增環境變數。
+
+## 匿名公開貼文查詢（2026-11-20）
+
+TIKTOK_CATALOG_ANONYMOUS_POSTS 預設 1：post（含單篇查詢）使用同一 Chromium 的獨立、非持久匿名 context，不載入帳號 Cookie；Story／轉發／profile／like 仍使用原持久登入 context。匿名 context 在 browser worker 重啟後重建，SQLite 游標與工作不變。設為 0 並重建 catalog 容器即可回復登入貼文查詢；無需還原資料庫或 profile。匿名方式不保證能讀私密貼文，失敗仍保留進度，不自動嘗試登入以規避存取限制。
+
+NAS 對單一公開帳號四個空 Cookie context 測試皆取得有效清單，正式 guard 下第一、二頁各 20 筆且無重複。這是短期測試，尚非 24 小時穩定性證明，也未證實所有歷史錯誤皆由登入造成。
+
+## 貼文空本文復發時
+
+以 `failureCode` 和診斷階段判斷故障。若 `postResponse` 同時記錄 `status=200`、`declaredBytes=0`、`readBytes=0`，表示貼文清單確實收到空本文。合法空清單仍應有可解析的回應結構。個人頁主文件 HTTP 403、頁面嵌入 JSON 解析錯誤和 `TIKTOK_BROWSER_START_FAILED` 都發生在清單取得之前，應各自排查。保留既有游標、首頁基線和通知收據。
+
+noVNC 顯示的是 Chromium 的 TikTok 網頁。Catalog 為避免重複送出貼文清單請求，會攔截網頁自身的清單請求，該頁可因此顯示 `Something went wrong`。判斷 Catalog 是否收到貼文時，應核對 Catalog 送出的清單請求之 HTTP 狀態、本文大小與 `itemList` 筆數，以及該帳號的 `lastSuccess` 是否前進。
+
+1. 核對 VPN 的最新出口、Catalog 心跳與各帳號的 `lastSuccess`。單次錯誤先讓既有退避排程重試。現行 Catalog 已攔截頁面順帶送出的貼文清單請求，空本文也不會在同一輪立即重送。
+2. 多條貼文串流持續收到空本文時，可使用同一映像、同一帳號與相同匿名設定，從兩個隔離的 VPN 出口各發一次唯讀查詢。2026-11-21 的同步對照中，`al-tia.prod.surfshark.com`（出口 `172.216.14.22`）回傳 0 bytes，`kr-seo.prod.surfshark.com`（出口 `61.97.243.106`）回傳 20 筆有效項目。結果只代表當次的兩個出口。
+3. 有有效的替代出口時，先確認 LIVE 沒有錄影，再套用 VPN 設定。等新 VPN 啟動並核對出口 IP，再確認 Catalog、LIVE 和 resolver 各自連到新 VPN 容器。保留原 Chromium profile 和 Cookie 匯入設定，以便分辨出口切換的效果。若 Chromium 因舊 hostname 的鎖無法啟動，先停止 Catalog 和手動登入容器，驗證沒有程序使用該 profile，備份並隔離已核實的殘留 Singleton 連結；保留 profile 內的 cookies 和其他資料。新版本正常關閉時會清理已核實屬於自己且已退出的 Chromium 鎖。
+4. 按帳號核對 `lastSuccess` 是否前進，並確認後續正常輪詢也成功。若要對照請求頻率，固定出口、profile 與訂閱名單，並避開歷史補抓。若要對照訂閱數，維持原有輪詢設定。公開嵌入頁只作影片補查線索，單篇確認作者與發布時間後才能判定是否新發布。
+
+2026-11-21 在同一首爾出口 `84.233.167.72` 的五帳號觀測中，降速與恢復原速各自最初約 15 分鐘分別成功 5 次和 14 次，兩段都沒有空本文。恢復原速後觀測逾一小時，合計成功 63 次，兩次空本文都在同一出口的下一次排程重試恢復，分別耗時約 57 秒和 55 秒。兩段等長樣本都沒有失敗，無法判定降速是否降低空回應機率。
+
+降速對照用 `TIKTOK_CATALOG_POST_REQUEST_GAP_SECONDS=120`，從一次排程貼文查詢結束起，全帳號至少等兩分鐘才開始下一次。五個帳號各約每十分鐘或稍久輪詢一次。這個限制也涵蓋貼文分頁和重試。`TIKTOK_CATALOG_POST_POLL_TEST_SECONDS` 維持 `0`；將間隔設為 `0` 可恢復原有排程。

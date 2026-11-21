@@ -14,6 +14,24 @@ from catalog_query import BrowserWorker
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_shutdown_signals_worker_before_its_process_group(self):
+        from unittest.mock import Mock, call, patch
+
+        worker = BrowserWorker()
+        proc = Mock(pid=123)
+        worker.proc = proc
+        operations = Mock()
+        operations.attach_mock(proc, 'proc')
+        with patch('catalog_query.os.killpg') as kill_group:
+            operations.attach_mock(kill_group, 'kill_group')
+            worker.close()
+        self.assertEqual(operations.mock_calls[:4], [
+            call.proc.terminate(),
+            call.proc.wait(timeout=20),
+            call.kill_group(123, signal.SIGKILL),
+            call.proc.wait(timeout=5),
+        ])
+
     def test_close_reaps_descendant_even_when_worker_exits_first(self):
         with tempfile.TemporaryDirectory() as folder:
             marker = Path(folder) / 'alive'
@@ -62,6 +80,43 @@ class LifecycleTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_cleanup_requires_original_owned_singleton_links(self):
+        from catalog_profile import ProfileLease
+        from unittest.mock import Mock
+
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder)
+            lock = profile / 'SingletonLock'
+            cookie = profile / 'SingletonCookie'
+            socket = profile / 'SingletonSocket'
+            lock.symlink_to('owned-host-123')
+            cookie.symlink_to('original-cookie')
+            socket.symlink_to('/tmp/original-socket')
+            process = Mock(pid=123)
+            process.poll.return_value = None
+            lease = ProfileLease(profile)
+            try:
+                self.assertEqual(lease.chromium_links(process, 'foreign-host'), {})
+                owned = lease.chromium_links(process, 'owned-host')
+                self.assertEqual(len(owned), 3)
+                lease.clear_chromium_links(process, owned)
+                self.assertTrue(lock.is_symlink())
+
+                socket.unlink()
+                socket.symlink_to('/tmp/replacement-socket')
+                process.poll.return_value = 0
+                lease.clear_chromium_links(process, owned)
+                self.assertTrue(lock.is_symlink())
+                self.assertTrue(cookie.is_symlink())
+                self.assertEqual(os.readlink(socket), '/tmp/replacement-socket')
+
+                socket.unlink()
+                lease.clear_chromium_links(process, owned)
+                self.assertFalse(lock.is_symlink())
+                self.assertFalse(cookie.is_symlink())
+            finally:
+                lease.close()
+
     def test_profile_exclusion_preserves_singleton_and_session(self):
         from catalog_profile import ProfileLease
         with tempfile.TemporaryDirectory() as folder:

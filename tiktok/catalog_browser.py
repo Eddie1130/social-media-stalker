@@ -89,13 +89,18 @@ class BrowserTransport:
             marker.chmod(0o600)
 
     def prepare_reader_page(self):
+        self.page = None
         self.page = self.context.new_page()
         # Persistent profiles may restore tabs after a crash or manual login.
         # The reader needs exactly one page; restored pages otherwise run forever.
         for page in list(self.context.pages):
             if page != self.page:
                 page.close()
-        self.context.on("page", lambda page: page.close() if self.page is not None and page != self.page else None)
+        if not hasattr(self, "_reader_contexts"):
+            self._reader_contexts = set()
+        if self.context not in self._reader_contexts:
+            self.context.on("page", lambda page: page.close() if self.page is not None and page != self.page else None)
+            self._reader_contexts.add(self.context)
 
     @staticmethod
     def guard(route):
@@ -152,14 +157,14 @@ class BrowserTransport:
             status_code=response["status"], text=response["text"], url=url, history=[],headers={"Retry-After":response.get("retryAfter")}
         )
 
-    def post_response(self, url):
+    def post_response(self, url, *, headers=None):
         trace = {"id": uuid.uuid4().hex, "stage": "fetch"}
-        value = self.page.evaluate("""async url => {
+        value = self.page.evaluate("""async ({url, headers}) => {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 25000);
           const meta = {};
           try {
-            const r = await fetch(url, {credentials:'include', signal:controller.signal});
+            const r = await fetch(url, {credentials:'include', signal:controller.signal, headers:headers || undefined});
             meta.status = r.status;
             const length = r.headers.get('Content-Length');
             meta.declaredBytes = length !== null && /^\\d{1,15}$/.test(length) ? Number(length) : null;
@@ -173,7 +178,7 @@ class BrowserTransport:
             const name = ['AbortError','TimeoutError','TypeError'].includes(e.name) ? e.name : 'Error';
             return {meta, error:name};
           } finally { clearTimeout(timer); }
-        }""", url)
+        }""", {"url": url, "headers": headers})
         trace.update(value["meta"])
         if "error" in value:
             trace.update(stage="read" if "status" in trace else "fetch", readError=value["error"])

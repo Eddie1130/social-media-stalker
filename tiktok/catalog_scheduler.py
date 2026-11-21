@@ -83,6 +83,7 @@ def select_stream(catalog,settings,now):
     pressure=archive_limits(catalog.state_dir)
     for name in subscriptions(settings):
         for kind in ('story','post','repost','profile','like'):
+            if kind == 'post' and not catalog.post_poll_allowed(now):continue
             if not catalog.target_recipients(settings,name,kind):continue
             state=catalog.stream(name,kind)
             if state['nextAt']<=now:
