@@ -52,6 +52,37 @@ test('reports and update removal are acknowledged in one controller state; stale
   assert.equal(Object.keys(s.replies).length, 0);
 });
 
+test('export previews, confirmation and worker updates edit the same message', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-export-edit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const s = settings();
+  const click = (data, updateId) => {
+    const update = callback(data, updateId);
+    update.callback_query.message.message_id = 42;
+    applyUpdate(s, update, Date.now(), undefined, true);
+    return s.replies[`reply:${updateId}`].body;
+  };
+  const report = (key, fields) => {
+    fs.writeFileSync(path.join(dir, 'health.json'), JSON.stringify({ at: Date.now() }));
+    fs.writeFileSync(path.join(dir, 'reports.json'), JSON.stringify({ [key]: { userId: '2', rows: [], ...fields } }));
+    ingestExportReports(s, dir);
+    assert.equal(s.replies['export:' + key].method, 'editMessageText');
+    assert.equal(s.replies['export:' + key].body.message_id, 42);
+  };
+  const preview = click('ex:preview:x:alice', 1);
+  assert.equal(preview.text, '正在估算檔案數與大小');
+  assert.deepEqual(preview.reply_markup.inline_keyboard, []);
+  assert.equal(s.exportRequests['2-1'].messageId, 42);
+  const confirm = { text: '確認匯出', callback_data: 'ex:confirm:' + 'a'.repeat(16) };
+  const previewKey = 'a'.repeat(24);
+  report(previewKey, { requestId: '2-1', text: '估算結果', rows: [[confirm]] });
+  assert.deepEqual(s.replies['export:' + previewKey].body.reply_markup.inline_keyboard, [[confirm]]);
+  assert.match(click(confirm.callback_data, 2).text, /正在安排打包/);
+  report('b'.repeat(24), { requestId: '2-2', text: '排隊中' });
+  report('c'.repeat(24), { messageId: 42, text: '打包中' });
+  report('d'.repeat(24), { messageId: 42, text: '匯出完成' });
+});
+
 test('private-chat and allowlist restrictions also protect export callback routing', () => {
   const s = settings();
   const update = callback('ex:preview:x:alice');

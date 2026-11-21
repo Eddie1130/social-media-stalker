@@ -92,7 +92,7 @@ export function applyUpdate(settings, update, now = Date.now(), statusText = () 
       userTarget(user, name).historyAt = now;
       result = panel(`已申請 @${name} 的貼文與精選歷史回補。`, [back]);
     }
-    else if (action === 'ex') result = exportCallback(settings, id, callback.data, update.update_id, now, exportEnabled, exportAccounts);
+    else if (action === 'ex') result = exportCallback(settings, id, callback.data, update.update_id, now, exportEnabled, exportAccounts, messageId);
     else if (action === 'tt') result = tikTokCallback(user, callback.data, now, overview('tt'));
     else if (action === 'x') result = xCallback(settings, user, id, callback.data, update.update_id, now, overview('x'));
     else if (action === 'menu') { delete user.waiting; result = mainMenu(user); }

@@ -11,6 +11,7 @@ export function exportGeneration(settings, id, platform, name) {
   const targets = settings.users[id]?.[maps[platform]];
   return targets && Object.hasOwn(targets, name) ? targets[name].generation : undefined;
 }
+const validMessageId = id => Number.isSafeInteger(id) && id > 0;
 const panel = (text, rows = []) => ({ text, reply_markup: { inline_keyboard: [...rows, [{ text: '⬅️ 主選單', callback_data: 'menu' }]] } });
 
 export function exportAccountNames(settings, platform, { root, stateDir } = {}) {
@@ -27,7 +28,7 @@ export function exportAccountNames(settings, platform, { root, stateDir } = {}) 
   return [...names].filter(name => validName(platform, name)).sort();
 }
 
-export function exportCallback(settings, id, data, updateId, now, enabled, accounts = platform => exportAccountNames(settings, platform)) {
+export function exportCallback(settings, id, data, updateId, now, enabled, accounts = platform => exportAccountNames(settings, platform), messageId) {
   if (!enabled) return panel('封存匯出尚未啟用，請聯絡管理員設定 HTTPS 下載服務。');
   const [, action, platform, name] = data.split(':');
   if (action === 'platforms' && id === settings.ownerId) return panel('管理員封存匯出：先選擇平台，再選單一帳號。',
@@ -51,8 +52,10 @@ export function exportCallback(settings, id, data, updateId, now, enabled, accou
   // Bound controller storage if the export worker is unavailable.
   if (Object.values(settings.exportRequests).filter(r => r.userId === id).length >= 8) return panel('匯出服務正在處理先前操作，請稍後再試。');
   settings.exportRequests[requestId] = { id: requestId, userId: id, action, at: now,
+    ...(validMessageId(messageId) ? { messageId } : {}),
     ...(confirm ? { preview: platform } : { platform }), ...(owner ? { page: Number(name) } : !confirm ? { name } : {}) };
-  return panel(action === 'preview' ? '正在估算檔案數與大小，完成後會提供確認按鈕。' : '正在處理匯出操作，結果會傳送到此對話。');
+  const text = { preview: '正在估算檔案數與大小', confirm: '正在安排打包\n預計剩餘時間：估算中' };
+  return Object.hasOwn(text, action) ? { text: text[action], reply_markup: { inline_keyboard: [] } } : panel('正在處理匯出操作');
 }
 
 export function validateExportSettings(settings) {
@@ -60,6 +63,7 @@ export function validateExportSettings(settings) {
     if (!settings.exportRequests || typeof settings.exportRequests !== 'object' || Array.isArray(settings.exportRequests)) throw Error('EXPORT_INVALID_REQUESTS');
     for (const [key, request] of Object.entries(settings.exportRequests)) {
       if (!/^\d{1,20}-\d{1,16}$/.test(key) || request?.id !== key || !/^[1-9]\d{0,19}$/.test(request.userId) || !key.startsWith(request.userId + '-') || !Number.isFinite(request.at)) throw Error('EXPORT_INVALID_REQUEST');
+      if (request.messageId !== undefined && !validMessageId(request.messageId)) throw Error('EXPORT_INVALID_REQUEST');
       if (request.action === 'confirm') {
         if (!/^[a-f0-9]{16}$/.test(request.preview)) throw Error('EXPORT_INVALID_REQUEST');
       } else if (request.action === 'owner') {
@@ -87,9 +91,13 @@ export function ingestExportReports(settings, dir, now = Date.now()) {
     if (!/^[a-f0-9]{24}$/.test(key) || typeof report?.text !== 'string' || report.text.length > 3800 || !Array.isArray(report.rows)) throw Error('EXPORT_INVALID_REPORT');
     if (settings.exportReceipts[key]) continue;
     changed = true;
-    const reply = { method: 'sendMessage', userId: report.userId, at: now, exportGrant: report.grant || undefined,
-      body: { chat_id: report.userId, text: report.text, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: report.rows } } };
-    if (settings.allowedIds.includes(reply.userId) && validExportReply(settings, reply, now)) settings.replies['export:' + key] = reply;
+    const request = settings.exportRequests?.[report.requestId];
+    const messageId = request?.userId === report.userId ? request.messageId : report.messageId;
+    const edit = validMessageId(messageId);
+    const reply = { method: edit ? 'editMessageText' : 'sendMessage', userId: report.userId, at: now, exportGrant: report.grant || undefined,
+      ...(report.progress === true ? { exportProgress: true } : {}),
+      body: { chat_id: report.userId, ...(edit ? { message_id: messageId } : {}), text: report.text, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: report.rows } } };
+    if ((!reply.exportProgress || edit) && settings.allowedIds.includes(reply.userId) && validExportReply(settings, reply, now)) settings.replies['export:' + key] = reply;
     settings.exportReceipts[key] = true;
     if (report.requestId) delete settings.exportRequests?.[report.requestId];
   }

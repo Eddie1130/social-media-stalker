@@ -32,6 +32,7 @@ export async function flushReplies(settingsSource,client,persist,{stopping=()=>f
         }});
       } catch(error) {
         if(error.message==='TELEGRAM_REPLY_SUPERSEDED'){await commit(s=>{delete s.replies[key];});continue;}
+        if(reply.exportProgress&&error.messageUnavailable){await commit(s=>{delete s.replies[key];});continue;}
         if(reply.method==='editMessageText'&&error.messageUnavailable){await commit(s=>{const r=s.replies[key];if(r){r.replacesMessageId=r.body.message_id;r.method='sendMessage';delete r.body.message_id;}});ok=false;continue;}
         if(!/^TELEGRAM_(?:ERROR_\d+|NETWORK_OR_RESPONSE_ERROR|RETRY_WAIT|STOPPING)$/.test(error.message))throw error;
         if(!(reply.method==='answerCallbackQuery'&&error.message==='TELEGRAM_ERROR_400')){

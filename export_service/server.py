@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,7 @@ TTL = 24 * 3600
 RESERVE = 1024**3
 ACTIVE = {"queued", "building"}
 HEARTBEAT_INTERVAL = 15
+PROGRESS_INTERVAL = 10
 
 
 def atomic(file, value):
@@ -111,9 +113,9 @@ class ExportService:
                 atomic(file, value)
                 self._persisted[name] = content
 
-    def report(self, uid, text, rows=None, request=None, grant=None):
+    def report(self, uid, text, rows=None, request=None, grant=None, message_id=None, progress=False):
         identity = secrets.token_hex(12)
-        self.state["reports"][identity] = {"userId": uid, "text": text, "rows": rows or [], "requestId": request, "grant": grant}
+        self.state["reports"][identity] = {"userId": uid, "text": text, "rows": rows or [], "requestId": request, "grant": grant, "messageId": message_id, "progress": progress}
 
     @staticmethod
     def buttons(platform, name):
@@ -129,7 +131,7 @@ class ExportService:
         missing = job.get("missing", 0)
         text = f"{'⚠️ 封存不完整' if missing else '✅ 封存匯出完成'}：{job['platform'].upper()} @{job['name']}\n快照：{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(job['snapshotAt']))}\nZIP：{job['bytes'] / 1024**3:.2f} GiB；缺失 {missing} 項\n到期：{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(job['expires']))}\n持有連結即可下載，請審慎轉傳。\n{self.base_url}/files/{token}"
         grant = {"platform": job["platform"], "name": job["name"], "generation": waiter["generation"], "expires": job["expires"]}
-        self.report(uid, text, self.buttons(job["platform"], job["name"]), request, grant)
+        self.report(uid, text, self.buttons(job["platform"], job["name"]), request, grant, waiter.get("messageId"))
 
     def preview(self, command, settings):
         uid, platform, name = command["userId"], command["platform"], command["name"]
@@ -156,11 +158,48 @@ class ExportService:
             identity = secrets.token_hex(12)
             existing = {"id": identity, "platform": platform, "name": name, "status": "queued", "waiters": {}, "at": self.clock(), "done": 0}
             jobs[identity] = existing
-        existing["waiters"].setdefault(uid, {"generation": preview["generation"]})
+        waiter = existing["waiters"].setdefault(uid, {"generation": preview["generation"]})
+        if command.get("messageId"):
+            waiter["messageId"] = command["messageId"]
+            waiter.pop("progressText", None)
         if existing["status"] == "ready":
             self.ready(existing, uid, command["id"])
         else:
-            self.report(uid, f"已排隊匯出 {platform.upper()} @{name}；同一帳號共用打包工作。", self.buttons(platform, name), command["id"])
+            text = self.progress_text(existing)
+            waiter["progressText"] = text
+            self.report(uid, text, self.buttons(platform, name), command["id"])
+
+    def progress_text(self, job):
+        text = f"{job['platform'].upper()} @{job['name']}"
+        if job["status"] == "queued":
+            ahead = sum(other["status"] == "building" or other["status"] == "queued" and other["at"] < job["at"]
+                        for other in self.state["jobs"].values())
+            return f"{text}：排隊中（前面有 {ahead} 項工作）\n預計剩餘時間：開始打包後估算"
+        if "totalBytes" not in job or "total" not in job:
+            return f"{text}：正在準備打包\n預計剩餘時間：估算中"
+        done, total = job["done"], job["total"]
+        processed = job.get("processedBytes", 0)
+        remaining = job["totalBytes"] - processed
+        elapsed = self.clock() - job["buildStartedAt"]
+        estimate = "估算中"
+        if remaining <= 0:
+            estimate = "正在完成 ZIP"
+        elif processed > 0 and elapsed >= 1:
+            seconds = elapsed * remaining / processed
+            estimate = "少於 1 分鐘" if seconds < 60 else f"約 {math.ceil(seconds / 60)} 分鐘"
+        return f"{text}：打包中（已處理 {done}/{total} 個檔案）\n預計剩餘時間：{estimate}"
+
+    def publish_progress(self, job):
+        if job["status"] not in ACTIVE:
+            return
+        now = self.clock()
+        text = self.progress_text(job)
+        for uid, waiter in job["waiters"].items():
+            if not waiter.get("messageId") or waiter.get("progressText") == text or now - waiter.get("progressAt", 0) < PROGRESS_INTERVAL:
+                continue
+            grant = {"platform": job["platform"], "name": job["name"], "generation": waiter["generation"], "expires": now + 120}
+            self.report(uid, text, self.buttons(job["platform"], job["name"]), grant=grant, message_id=waiter["messageId"], progress=True)
+            waiter.update(progressAt=now, progressText=text)
 
     def command(self, command, settings):
         uid, action = command["userId"], command["action"]
@@ -204,9 +243,8 @@ class ExportService:
             else:
                 labels = {"queued": "排隊中", "building": "打包中", "failed": "失敗", "cancelled": "已取消", "expired": "已到期"}
                 text = labels.get(job["status"], "尚無申請") if job else "尚無申請"
-                if job and job["status"] == "building":
-                    text += f"；已處理 {job.get('done', 0)}/{job.get('total', 0)} 個檔案"
-                self.report(uid, f"{platform.upper()} @{name}：{text}", self.buttons(platform, name), command["id"])
+                text = self.progress_text(job) if job and job["status"] in ACTIVE else f"{platform.upper()} @{name}：{text}"
+                self.report(uid, text, self.buttons(platform, name), command["id"])
 
     def accounts(self, platform, settings):
         names = set()
@@ -246,11 +284,14 @@ class ExportService:
                 self.state["processed"][identity] = True
             self.state["processed"] = {key: True for key in self.state["processed"] if key in settings.get("exportRequests", {})}
             self.state["previews"] = {key: value for key, value in self.state["previews"].items() if value["expires"] > self.clock()}
+            for job in self.state["jobs"].values():
+                self.publish_progress(job)
             self.persist()
             if not self.stop.is_set() and (not self.worker or not self.worker.is_alive()):
                 job = next((job for job in self.state["jobs"].values() if job["status"] == "queued"), None)
                 if job:
                     job["status"] = "building"
+                    job.pop("total", None)
                     self.persist()
                     self.worker = threading.Thread(target=self.build, args=(job,), name="archive-builder", daemon=True)
                     self.worker.start()
@@ -271,10 +312,12 @@ class ExportService:
             if shutil.disk_usage(self.dir).free < needed:
                 raise ValueError("INSUFFICIENT_SPACE")
             with self.guard:
-                job.update(snapshotAt=snapshot_at, total=len(snapshot["files"]), done=0)
+                job.update(snapshotAt=snapshot_at, total=len(snapshot["files"]), done=0,
+                           totalBytes=snapshot["bytes"], processedBytes=0, buildStartedAt=self.clock())
                 self.persist()
             missing = list(snapshot["missing"])
             saved = []
+            processed = 0
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
                 os.chmod(temporary, 0o600)
                 for item in snapshot["files"]:
@@ -284,11 +327,17 @@ class ExportService:
                         source = safe_open(self.root, relative)
                     except (OSError, ValueError):
                         missing.append(relative)
+                        processed += item["size"]
+                        with self.guard:
+                            job.update(done=job["done"] + 1, processedBytes=processed)
                         continue
                     with source:
                         info = os.fstat(source.fileno())
                         if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (item["dev"], item["ino"], item["size"], item["mtime"]):
                             missing.append(relative)
+                            processed += item["size"]
+                            with self.guard:
+                                job.update(done=job["done"] + 1, processedBytes=processed)
                             continue
                         with archive.open(relative, "w", force_zip64=True) as output:
                             remaining = item["size"]
@@ -298,18 +347,21 @@ class ExportService:
                                     self.check_build(job)
                                     if shutil.disk_usage(self.dir).free < RESERVE:
                                         raise ValueError("INSUFFICIENT_SPACE")
+                                    with self.guard:
+                                        job["processedBytes"] = processed
                                     last_check = time.monotonic()
                                 chunk = source.read(min(1024**2, remaining))
                                 if not chunk:
                                     raise ValueError("SOURCE_CHANGED_DURING_EXPORT")
                                 output.write(chunk)
                                 remaining -= len(chunk)
+                                processed += len(chunk)
                         if os.fstat(source.fileno()).st_mtime_ns != item["mtime"]:
                             missing.append(relative)
                         else:
                             saved.append(relative)
                     with self.guard:
-                        job["done"] += 1
+                        job.update(done=job["done"] + 1, processedBytes=processed)
                 manifest = {"platform": job["platform"], "account": job["name"], "snapshotAt": snapshot_at, "files": saved, "missing": sorted(set(missing)), "records": snapshot["records"]}
                 archive.writestr("export-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
                 archive.writestr("缺失清單.txt", "\n".join(manifest["missing"]) or "沒有已知缺失。")
@@ -331,8 +383,8 @@ class ExportService:
                 else:
                     job["status"] = "cancelled" if str(error) == "EXPORT_CANCELLED" else "failed"
                     text = {"INSUFFICIENT_SPACE": "磁碟空間不足，已停止匯出；原始封存與其他有效 ZIP 均保留。", "NO_ARCHIVED_FILES": "尚無可匯出的已完成封存。"}.get(str(error), "匯出未完成，請重新申請或聯絡管理員；原始封存仍保留。")
-                    for uid in job["waiters"]:
-                        self.report(uid, text)
+                    for uid, waiter in job["waiters"].items():
+                        self.report(uid, text, message_id=waiter.get("messageId"))
                 self.persist()
         finally:
             temporary.unlink(missing_ok=True)

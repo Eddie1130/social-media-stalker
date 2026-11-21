@@ -62,6 +62,25 @@ class ExportTest(unittest.TestCase):
         reports = [r for r in self.service.state["reports"].values() if r["userId"] == uid and r.get("grant")]
         return reports[-1]["text"].split("/files/")[-1]
 
+    def test_progress_and_download_target_confirmation_message(self):
+        self.command("preview", messageId=42)
+        preview = next(iter(self.service.state["previews"]))
+        self.service.confirm({"userId": "2", "preview": preview, "id": "2-2", "messageId": 42}, self.settings)
+        job = next(iter(self.service.state["jobs"].values()))
+        self.service.publish_progress(job)
+        self.assertIn("開始打包後估算", list(self.service.state["reports"].values())[-1]["text"])
+        job.update(status="building", done=1, total=4, totalBytes=400, processedBytes=100, buildStartedAt=self.now)
+        self.now += 30
+        self.service.publish_progress(job)
+        progress = list(self.service.state["reports"].values())[-1]
+        self.assertEqual(progress["messageId"], 42)
+        self.assertIn("已處理 1/4 個檔案", progress["text"])
+        self.assertIn("約 2 分鐘", progress["text"])
+        self.service.build(job)
+        final = list(self.service.state["reports"].values())[-1]
+        self.assertEqual(final["messageId"], 42)
+        self.assertIn("封存匯出完成", final["text"])
+
     def test_tiktok_export_preserves_historical_names_statuses_and_row_order(self):
         path = self.watch / "tiktok/catalog/catalog.sqlite"
         path.parent.mkdir(parents=True)
