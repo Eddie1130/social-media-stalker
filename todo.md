@@ -31,3 +31,12 @@
 - [x] 14:56–14:57 HKT 核查：TikTok 最近一小時 10 筆查詢失敗涉及多個帳號，並非上述 repost；當下皆恢復、pending=0。X 待辦 256→248，IG 有近期成功查詢，Telegram pending=0；未見持續停滯或反覆崩潰證據。這是當次快照，不能取代持續觀測。
 
 詳見 [TikTok 穩定性報告](docs/tiktok-stability-research-20261117.md)及[異常時間表](docs/tiktok-stability-incidents-20261117.csv)。
+
+## 監控 NAS 上的專案容器
+
+- [ ] 用 NAS 排程定期執行唯讀的 Compose 狀態檢查，將結果寫入 `ig-watchdog` 可讀取的狀態檔。Docker socket 留在主機端。
+- [ ] 維護應常駐的服務清單。只有啟用時才納入 `archive-export` 與 `archive-tunnel`。排除臨時使用的 `tiktok-login`，並允許在維護期間暫停個別服務的告警。
+- [ ] 區分容器退出、消失或反覆重啟，以及容器仍在運行但 Docker 回報 `unhealthy`。部署或短暫故障先給約兩分鐘緩衝，異常持續才透過現有 Telegram 告警路徑通知一次。先前已發出告警的服務恢復後，再通知一次。
+- [ ] 對已有健康檢查的服務直接採用 Docker 健康狀態。對 Telegram Bot API、TikTok Browser Resolver 與啟用中的 `archive-tunnel`，先確認映像是否已有可用探測，再補上缺少的服務探測。
+- [ ] 由 NAS 的獨立通知檢查 `ig-watchdog` 本身與排程是否仍在運作。各服務與 Docker 繼續負責重試及重啟。
+- [ ] 驗證容器退出、持續 `unhealthy`、短暫重啟、故障恢復、維護暫停及選用服務未啟用時的告警行為。
