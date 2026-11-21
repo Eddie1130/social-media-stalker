@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { atomic } from './error-monitor.mjs';
 import { downloadStory, archiveReason } from './story-archive.mjs';
+import { formatJST } from './time-jst.mjs';
 import { validMediaUrl } from './story-media.mjs';
 import { checkpointRequired, sessionInvalid } from './targets.mjs';
 import { idOK, highlightId } from './catalog-api.mjs';
@@ -102,6 +103,7 @@ export class CatalogWatcher {
         if (this.cutoff && post.takenAt*1000 < this.cutoff && !posts.backfill) continue;
         let record=posts.records[post.id];
         if(!record){const index=posts.nextIndex++;record=posts.records[post.id]={index,folder:`posts/${sequence(index)}_${dateJST(post.takenAt)}`,parts:{},nextPart:1};}
+        record.takenAt=post.takenAt;
         this.state.captions[post.id]={...this.state.captions[post.id],file:record.folder+'/caption.txt',text:post.caption,hash:hash(post.caption)};
         for(const part of post.media)this.addAsset('post',post.id,part,record,'',post.code,this.cutoff ? post.takenAt*1000 < this.cutoff : !posts.baseline);
       }
@@ -221,9 +223,11 @@ export class CatalogWatcher {
       for(let offset=0;offset<group.length;offset+=10) {
         if(signal.aborted||shouldYield()||Date.now()-started>=90000||tgBlocked||sends>=5)break;
         const batch=group.slice(offset,offset+10),asset=batch[0];
-        const label=asset.kind==='post'?'IG 新貼文':`IG 精選：${asset.title}`;
+        const isPost=asset.kind==='post';
+        const label=isPost?`[Instagram Post] ${asset.parent}`:`IG 精選：${asset.title}`;
         const text=asset.kind==='post'?this.state.captions[asset.parent]?.text||'':'';
-        const caption=[`@${this.username}`,label,dateJST(asset.takenAt),asset.code?`https://www.instagram.com/p/${asset.code}/`:'',text].filter(Boolean).join('\n');
+        const link=asset.code?`https://www.instagram.com/p/${asset.code}/`:'';
+        const caption=[`@${this.username}`,label,...(isPost?[formatJST((this.state.posts.records[asset.parent].takenAt ?? asset.takenAt)*1000),text,link]:[dateJST(asset.takenAt),link])].filter(Boolean).join('\n');
         const captionSent=asset.kind==='post'&&Object.values(this.state.assets).some(a=>a.kind==='post'&&a.parent===asset.parent&&a.telegramDone);
         const media=batch.map((a,index)=>({type:a.mediaType===2?'video':'photo',media:a.mediaUrl,
           ...(a.mediaType===2?{supports_streaming:true}:{}),...(!captionSent&&index===0?{caption:[...caption].slice(0,900).join('')}:{})}));

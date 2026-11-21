@@ -279,7 +279,11 @@ export class XWatcher {
           const event=p.event||this.pendingStore.read(p.eventRef);
           const result=await this.archive.save(event);
           if(result.errors?.length) throw Error('X_MEDIA_DOWNLOAD_INCOMPLETE');
-          if(p.recipients.length)this.emit({type:'post',username:name,kind:event.kind,statusId:event.statusId,publishedAt:event.publishedAt,at:p.at,recipients:p.recipients,result},`${name}:${key}:${p.at}`);
+          if(p.recipients.length) {
+            const quoted = event.kind === 'quote' ? event.raw?.quote : undefined;
+            const quote = quoted ? { author: quoted.author?.screen_name, text: quoted.text ?? quoted.raw_text?.text } : undefined;
+            this.emit({type:'post',username:name,kind:event.kind,statusId:event.statusId,publishedAt:event.publishedAt,at:p.at,recipients:p.recipients,result,quote},`${name}:${key}:${p.at}`);
+          }
           delete a.pending[key];
           if(p.eventRef)completed.push(p.eventRef);
         } catch(error) {

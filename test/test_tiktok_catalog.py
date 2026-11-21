@@ -28,6 +28,25 @@ from catalog_media import delivery_parts
 
 
 class CatalogTests(unittest.TestCase):
+    def test_post_and_repost_notification_headers(self):
+        for kind, expected in (
+            ("post", ["[TikTok Post] 123", "2026-10-16 01:00:00 JST", "caption"]),
+            ("repost", ["[TikTok Repost] 123", "發佈時間未知", "原作者 @bob",
+                        "caption", "原文時間：2026-10-16 01:00:00 JST"]),
+        ):
+            self.catalog.queue_event({
+                "username": "alice", "target": "alice", "folder": "alice",
+                "kind": kind, "at": self.time, "recipients": [],
+                "item": {"id": "123", "author": "bob", "caption": "caption",
+                         "publishedAt": 1792080000000},
+            }, ["video.mp4"])
+            event = next(event for (data,) in self.catalog.db.execute("SELECT data FROM outbox")
+                         if (event := json.loads(data))["kind"] == kind)
+            self.assertEqual(event["text"].splitlines(),
+                             ["@alice", *expected, "https://www.tiktok.com/@bob/video/123"])
+            self.assertEqual(event["mediaCaption"], event["text"])
+
+
     def test_archive_repairs_existing_identical_copy_without_downloading(self):
         self.fetch.return_value = self.page()
         self.catalog.poll("alice", "post", self.settings)

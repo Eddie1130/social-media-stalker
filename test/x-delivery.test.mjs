@@ -278,3 +278,18 @@ test('monitored X albums include the post text only in the first media caption',
   assert.equal(f.calls[0].body.media[1].caption,undefined);
   await delivery.drain(f.client);assert.equal(f.calls.length,1);
 });
+
+for (const [kind, expected] of [
+  ['post', ['[X/twitter Post] 123', '2026-10-16 01:00:00 JST', 'hello']],
+  ['repost', ['[X/twitter Repost]', '發佈時間未知', '原作者 @bob', 'hello', '原文時間：2026-10-16 01:00:00 JST']],
+  ['quote', ['[X/twitter Quote] 123', '2026-10-16 01:00:00 JST', 'hello', '', '引用 @bob', 'original']],
+]) {
+  test(`X ${kind} notification formats its header and content`, async t => {
+    const f = fixture(t);
+    Object.assign(f.event, { kind, publishedAt: 1792080000000, quote: { author: 'bob', text: 'original' } });
+    f.event.result.url = kind === 'repost' ? 'https://x.com/bob/status/123' : f.event.result.url;
+    f.publish();
+    assert.equal(await f.delivery().drain(f.client), true);
+    assert.deepEqual(f.calls[0].body.text.split('\n'), ['@alice', ...expected, f.event.result.url]);
+  });
+}

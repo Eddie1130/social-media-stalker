@@ -33,8 +33,8 @@ export function buildMediaResult(items, targetUserId, username, reelId) {
 }
 export function mediaRequest(story, chatId) {
   if (!validMediaUrl(story.mediaUrl)) throw new Error('MEDIA_INVALID_URL');
-  const iso = Number.isFinite(story.takenAt) ? formatJST(story.takenAt * 1000) : '';
-  const caption = [`@${story.username}`, `Story ${story.id}`, iso].filter(Boolean).join('\n');
+  const iso = Number.isFinite(story.takenAt) ? formatJST(story.takenAt * 1000) : '發佈時間未知';
+  const caption = [`@${story.username}`, story.id ? `[Instagram Story] ${story.id}` : '[Instagram Story]', iso].join('\n');
   return story.mediaType === 2
     ? { method: 'sendVideo', body: { chat_id: chatId, video: story.mediaUrl, caption, supports_streaming: true } }
     : { method: 'sendPhoto', body: { chat_id: chatId, photo: story.mediaUrl, caption } };

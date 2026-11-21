@@ -70,3 +70,11 @@ process.exitCode = 6;`);
   await assert.rejects(fetchStories(script), /^Error: SESSION_INVALID_CHECKPOINT_REQUIRED:http=400:exit=6$/);
 });
 
+
+test('Instagram Story caption starts with account, type and ID, and JST time', () => {
+  const { body } = media.mediaRequest({
+    username: 'alice', id: '123', takenAt: 1792080000,
+    mediaUrl: 'https://example.cdninstagram.com/story.jpg',
+  }, '1');
+  assert.equal(body.caption, '@alice\n[Instagram Story] 123\n2026-10-16 01:00:00 JST');
+});

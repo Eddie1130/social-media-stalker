@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 import copy
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -898,7 +899,27 @@ class Catalog:
             f"TikTok [{kind}] @{record['username']}\n原作者：@{item.get('author', '')}\n"
             + item.get("caption", "")
         )
-        if kind in ("post", "repost", "story", "like"):
+        if kind in ("post", "repost"):
+            published_at = item.get("publishedAt") or 0
+            published = (
+                datetime.fromtimestamp(published_at / 1000, timezone(timedelta(hours=9)))
+                .strftime("%Y-%m-%d %H:%M:%S JST")
+                if published_at > 0 else ""
+            )
+            media_type = f"[TikTok {kind.title()}]"
+            lines = [
+                f"@{record['username']}",
+                f"{media_type} {iid}" if iid else media_type,
+                (published if kind == "post" else "") or "發佈時間未知",
+            ]
+            if kind == "repost" and item.get("author"):
+                lines.append(f"原作者 @{item['author']}")
+            if item.get("caption"):
+                lines.append(item["caption"])
+            if kind == "repost" and published:
+                lines.append(f"原文時間：{published}")
+            text = "\n".join(lines)
+        if kind in ("post", "repost", "story", "like") and iid:
             text += f"\nhttps://www.tiktok.com/@{item.get('author') or '_'}/video/{iid}"
         event = {
             "username": record["username"],

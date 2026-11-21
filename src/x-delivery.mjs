@@ -14,6 +14,26 @@ const username = value => typeof value === 'string' && /^[a-z0-9_]{1,15}$/.test(
 const userId = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 const kinds = ['post', 'repost', 'reply', 'quote'];
 const statusUrl = value => typeof value === 'string' && /^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+$/.test(value);
+const kindLabels = { post: 'Post', repost: 'Repost', reply: 'Reply', quote: 'Quote' };
+
+function notificationText(event) {
+  const { result, kind, username, statusId, publishedAt, quote } = event;
+  const repost = kind === 'repost';
+  const type = `[X/twitter ${kindLabels[kind]}]`;
+  const time = Number.isFinite(publishedAt) ? formatJST(publishedAt) : '';
+  const author = result.url.split('/')[3];
+  const quoteAuthor = /^[a-z0-9_]{1,15}$/i.test(quote?.author ?? '') ? `引用 @${quote.author}` : '引用原文';
+  return [
+    `@${username}`, repost ? type : `${type} ${statusId}`,
+    (!repost && time) || '發佈時間未知',
+    repost ? `原作者 @${author}` : '',
+    result.caption,
+    kind === 'quote' && typeof quote?.text === 'string' && quote.text ? `\n${quoteAuthor}\n${quote.text}` : '',
+    repost && time ? `原文時間：${time}` : '',
+    result.url,
+  ].filter(Boolean).join('\n');
+}
+
 const safeReason = error => /^[A-Z0-9_]+$/.test(error?.message || '') ? error.message : 'X_LOCAL_FILE_UNAVAILABLE';
 
 function validateEvent(event) {
@@ -44,7 +64,7 @@ function validateState(state) {
     if (!/^[a-f0-9]{64}$/.test(key) || !object(entry) || !Number.isSafeInteger(entry.nextText) || entry.nextText < 0 ||
         !Number.isSafeInteger(entry.nextGroup) || entry.nextGroup < 0 || !Number.isSafeInteger(entry.failures) || entry.failures < 0 ||
         (entry.retryAt !== undefined && (!Number.isFinite(entry.retryAt) || entry.retryAt < 0)) ||
-        ['done','uncertain','reported','documents','captionMode'].some(field => entry[field] !== undefined && typeof entry[field] !== 'boolean') ||
+        ['done','uncertain','reported','documents','captionMode','standardFormat'].some(field => entry[field] !== undefined && typeof entry[field] !== 'boolean') ||
         (entry.localError !== undefined && (typeof entry.localError !== 'string' || !/^[A-Z0-9_]+$/.test(entry.localError))) ||
         (entry.inflight !== undefined && (!object(entry.inflight) || !Number.isFinite(entry.inflight.at)))) throw Error('X_DELIVERY_HISTORY_INVALID');
   }
@@ -154,7 +174,9 @@ export class XDelivery {
       }
     }
     const result = event.result;
-    const text = event.type === 'notice' ? event.text : [
+    // A receipt started before this format change must resume at the original text offsets.
+    entry.standardFormat ??= !event.manual && entry.nextText === 0 && entry.nextGroup === 0;
+    const text = event.type === 'notice' ? event.text : entry.standardFormat ? notificationText(event) : [
       `[${event.kind.toUpperCase()}] @${event.username}`,
       Number.isFinite(event.publishedAt) ? `${event.kind === 'repost' ? '原文時間' : '發表時間'}：${formatJST(event.publishedAt)}` : '',
       event.kind === 'repost' ? `偵測時間：${formatJST(event.at)}（非精確轉發時間）` : '',

@@ -195,7 +195,7 @@ test('new carousel sends one ordered mixed album with caption once and retries a
  await w.deliver(new AbortController().signal,async(method,body)=>{failed.push({method,body});throw Error('TELEGRAM_ERROR_500');});
  assert.equal(failed.length,1);assert.equal(failed[0].method,'sendMediaGroup');
  assert.deepEqual(failed[0].body.media.map(m=>m.type),['photo','video']);
- assert.match(failed[0].body.media[0].caption,/caption 日本語/);assert.equal(failed[0].body.media[1].caption,undefined);
+ assert.equal(failed[0].body.media[0].caption,'@test\n[Instagram Post] 7\n2026-10-16 01:00:00 JST\ncaption 日本語\nhttps://www.instagram.com/p/ABC/');assert.equal(failed[0].body.media[1].caption,undefined);
  assert.ok(Object.values(w.state.assets).every(a=>!a.telegramDone));
  const restarted=new CatalogWatcher(f.args),sent=[];
  await restarted.deliver(new AbortController().signal,async(method,body,metadata)=>{sent.push({method,body,metadata});});
